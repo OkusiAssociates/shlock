@@ -1,0 +1,382 @@
+#!/bin/bash
+#shellcheck disable=SC2317  # Unreachable code warnings for cleanup() and show_help() - called via trap and die
+#
+# shlock - File-based locking system with stale lock detection
+#
+# DESCRIPTION:
+#   Provides exclusive file-based locking using flock(1) for safe concurrent
+#   script execution. Prevents multiple instances of the same operation from
+#   running simultaneously and includes stale lock detection for cleanup of
+#   locks left behind by crashed processes.
+#
+# USAGE:
+#   shlock [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
+#
+# ARGUMENTS:
+#   LOCKNAME    Unique identifier for the lock (e.g., 'myapp', 'backup')
+#               If omitted, derived from directory-basename of COMMAND
+#   COMMAND     Command to execute while holding the lock
+#   ARGS        Optional arguments passed to COMMAND
+#
+# OPTIONS:
+#   -m, --max-age HOURS     Maximum lock age in hours (default: 24)
+#   -w, --wait              Wait indefinitely for lock to become available
+#   -t, --timeout SECONDS   Maximum time to wait for lock (implies --wait)
+#   -s, --steal             Forcefully remove existing lock (prompts only if process running)
+#   -h, --help              Display this help message
+#   -V, --version           Display version information
+#
+# LOCKING MECHANISM:
+#   - Uses flock(1) on /run/lock/<LOCKNAME>.lock for exclusive locking
+#   - PID file at /run/lock/<LOCKNAME>.pid tracks lock holder
+#   - Non-blocking by default (fails immediately if lock is held)
+#   - With -w/--wait: blocks until lock is available
+#   - With -t/--timeout: waits up to specified seconds (implies --wait)
+#   - Stale lock detection: removes locks older than max-age with dead processes
+#
+# EXIT CODES:
+#   0 - Command executed successfully
+#   1 - Lock acquisition failed (held by another process or timeout)
+#   2 - Invalid arguments
+#   3 - Command failed
+#
+# EXAMPLES:
+#   # Non-blocking lock (default)
+#   shlock backup -- /usr/local/bin/backup.sh
+#
+#   # Auto-generate lock name from command
+#   shlock -- /usr/local/bin/backup.sh
+#
+#   # Wait indefinitely for lock
+#   shlock --wait deployment -- ./deploy.sh production
+#
+#   # Wait up to 30 seconds for lock
+#   shlock --timeout 30 sync -- rsync -av /src /dest
+#
+#   # Custom stale lock threshold
+#   shlock --max-age 12 critical -- /path/to/critical.sh
+#
+#   # Using short options (bundling supported, arg-taking option must be last)
+#   shlock -wt 60 -m 6 backup -- /usr/local/bin/backup.sh
+#
+#   # Forcefully steal a held lock (prompts only if holder is running)
+#   shlock --steal backup -- /usr/local/bin/backup.sh
+#
+# NOTES:
+#   - Lock files persist after command completion for reuse
+#   - PID files are cleaned up on exit
+#   - flock is released when the script exits (normal or signal)
+#   - --steal removes dead locks automatically, prompts only for running processes
+#   - Safe for use in cron jobs and automated scripts
+
+set -euo pipefail
+shopt -s inherit_errexit shift_verbose
+
+declare -rx PATH=/usr/local/bin:/usr/bin:/bin
+
+# Script metadata
+declare -r VERSION=1.0.1
+declare -r SCRIPT_NAME=${0##*/}
+
+# Global variables
+declare -- LOCKNAME=''
+declare -- LOCKFILE=''
+declare -- PIDFILE=''
+declare -i MAX_AGE_HOURS=24
+declare -i WAIT_MODE=0
+declare -i TIMEOUT_SECONDS=0
+declare -i STEAL_MODE=0
+
+# Messaging functions -----------------
+error() { >&2 echo "$SCRIPT_NAME: error: $*"; }
+
+die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
+
+yn() {
+  local -- REPLY
+  read -p "$* [y/N] " -r REPLY
+  [[ $REPLY =~ ^[Yy] ]]
+}
+
+# Helper functions --------------------
+# Validate that $2 exists and is numeric, die with error if not
+arg2_num(){
+  if ((${#@}-1<1)) || [[ ! "$2" =~ ^[0-9]+$ ]]; then
+    die 2 "${1@Q} requires a numeric argument"
+  fi
+}
+
+# Determine lock directory with fallback
+# Tries /run/lock, then /var/lock, then creates /tmp/locks, or fails
+determine_lock_dir() {
+  local -a lock_dirs=(/run/lock /var/lock)
+  local -- dir
+
+  # Try standard directories first
+  for dir in "${lock_dirs[@]}"; do
+    if [[ -d "$dir" && -w "$dir" ]]; then
+      echo "$dir"
+      return 0
+    fi
+  done
+
+  # Fall back to /tmp/locks - create if needed
+  dir=/tmp/locks
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir" 2>/dev/null || return 1
+  fi
+
+  if [[ -w "$dir" ]]; then
+    echo "$dir"
+    return 0
+  fi
+
+  # All options exhausted
+  return 1
+}
+
+is_process_running() {
+  local -i pid=$1
+  kill -0 "$pid" 2>/dev/null
+}
+
+is_lock_stale() {
+  local -- lockfile=$1
+  local -i max_age_seconds=$((MAX_AGE_HOURS * 3600))
+
+  [[ -f "$lockfile" ]] || return 1  # Not stale if doesn't exist
+
+  local -i lock_age=$(($(date +%s) - $(stat -c %Y "$lockfile" 2>/dev/null || echo 0)))
+
+  ((lock_age > max_age_seconds))
+}
+
+clean_stale_lock() {
+  >&2 echo "$SCRIPT_NAME: Lock is older than $MAX_AGE_HOURS hours, removing stale lock..."
+  rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null ||:
+}
+
+cleanup() {
+  trap - EXIT
+  rm -f "$PIDFILE" 2>/dev/null ||:
+  # flock is released when fd 200 closes; lock file persists for reuse
+}
+
+steal_lock() {
+  # Check if lock exists
+  if [[ ! -f "$LOCKFILE" ]]; then
+    # No lock to steal, just proceed normally
+    return 0
+  fi
+
+  # Read holder PID
+  local -- holder_pid='unknown'
+  if [[ -f "$PIDFILE" ]]; then
+    holder_pid=$(< "$PIDFILE") 2>/dev/null || holder_pid='unknown'
+  fi
+
+  # Check if holder process is running
+  if [[ "$holder_pid" != 'unknown' ]] && is_process_running "$holder_pid"; then
+    # Process is RUNNING - warn and prompt for confirmation
+    >&2 echo "$SCRIPT_NAME: ▲ WARNING: Lock ${LOCKNAME@Q} is held by RUNNING process PID $holder_pid"
+    if ! yn "$SCRIPT_NAME: Really steal this lock?"; then
+      die 1 'Lock steal cancelled by user'
+    fi
+    >&2 echo "$SCRIPT_NAME: Stealing lock ${LOCKNAME@Q} from running process..."
+  else
+    # Process is DEAD - just clean up automatically (no prompt needed)
+    >&2 echo "$SCRIPT_NAME: Removing abandoned lock ${LOCKNAME@Q} (process $holder_pid is dead)"
+  fi
+
+  # Remove lock and pid files
+  rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null ||:
+}
+
+# Usage -------------------------------
+show_help() {
+  cat <<HELP
+Usage: $SCRIPT_NAME [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
+
+File-based locking system with stale lock detection.
+
+Arguments:
+  LOCKNAME             Unique lock identifier (optional)
+                       If omitted, derived from directory-basename
+                       of COMMAND
+  --                   -- is *required* to signal the start of COMMAND
+
+Options:
+  -m, --max-age HOURS      Maximum lock age in hours (default: $MAX_AGE_HOURS)
+  -w, --wait               Wait indefinitely for lock to become available
+  -t, --timeout SECONDS    Maximum time to wait for lock (implies --wait)
+  -s, --steal              Forcefully remove existing lock (prompts only if process running)
+  -h, --help               Display this help message
+  -V, --version            Display version information
+
+Exit codes:
+  0   - Command executed successfully
+  1   - Lock acquisition failed (lock held by another process or timeout)
+  2   - Invalid arguments
+  3   - Command failed
+
+Examples:
+  # Non-blocking (default)
+  $SCRIPT_NAME backup -- /usr/local/bin/backup.sh
+
+  # Auto-generate lock name from command
+  $SCRIPT_NAME -- /usr/local/bin/backup.sh
+
+  # Wait indefinitely for lock
+  $SCRIPT_NAME --wait deployment -- ./deploy.sh
+
+  # Wait up to 30 seconds
+  $SCRIPT_NAME --timeout 30 sync -- rsync -av /src /dest
+
+  # Custom stale lock threshold
+  $SCRIPT_NAME --max-age 12 critical -- /path/to/critical.sh
+
+  # Using short options
+  $SCRIPT_NAME -t 60 -m 6 backup -- /usr/local/bin/backup.sh
+
+  # Forcefully steal a held lock (prompts only if holder is running)
+  $SCRIPT_NAME --steal backup -- /usr/local/bin/backup.sh
+HELP
+}
+
+# Main ----------------------------------------------------------------------
+main() {
+  while (($#)); do
+    case $1 in
+      -h|--help)
+        show_help; return 0
+        ;;
+      -V|--version)
+        echo "$SCRIPT_NAME $VERSION"; return 0
+        ;;
+      -m|--max-age)
+        arg2_num "$@"; shift
+        MAX_AGE_HOURS=$1
+        ;;
+      -w|--wait)
+        WAIT_MODE=1
+        ;;
+      -t|--timeout)
+        arg2_num "$@"; shift
+        TIMEOUT_SECONDS=$1
+        ;;
+      -s|--steal)
+        STEAL_MODE=1
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -[mwtsVh]?*)  # BCS0805 short option bundling
+        set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue
+        ;;
+      -*)
+        die 2 "Unknown option ${1@Q}"
+        ;;
+      *)
+        # First non-option argument is the lock name
+        LOCKNAME=$1
+        # Next should be --
+        [[ "${2:-}" == '--' ]] || die 2 'Expected -- after LOCKNAME'
+        ;;
+    esac
+    shift
+  done
+
+  # Validate arguments
+  (($#)) || die 2 'COMMAND is required'
+
+  if [[ -z "$LOCKNAME" ]]; then
+    # Auto-generate LOCKNAME from basename of COMMAND (if not provided)
+    # Exit with error if LOCKNAME derivation fails
+    LOCKNAME=$(basename -- "$(realpath -- "$1" || echo '')" 2>/dev/null || echo '')
+    [[ -n $LOCKNAME ]] || die 2 "LOCKNAME could not be acquired from ${1@Q}"
+  fi
+
+  [[ "$LOCKNAME" =~ ^[a-zA-Z0-9._-]+$ ]] || die 2 "Invalid LOCKNAME ${LOCKNAME@Q} (alphanumeric, dots, hyphens, underscores only)"
+  [[ ! "$LOCKNAME" =~ ^\.+$ ]] || die 2 "Invalid LOCKNAME ${LOCKNAME@Q} (cannot be only dots)"
+
+  # Determine lock directory with fallback
+  local -- LOCK_DIR
+  LOCK_DIR=$(determine_lock_dir) || die 1 'Cannot find or create writable lock directory'
+  readonly -- LOCK_DIR
+
+  # Setup lock file paths
+  LOCKFILE="$LOCK_DIR"/"$LOCKNAME".lock
+  PIDFILE="$LOCK_DIR"/"$LOCKNAME".pid
+
+  # Check if lock file exists and is stale
+  if [[ -f "$LOCKFILE" ]]; then
+    if is_lock_stale "$LOCKFILE"; then
+      # Check if the process that created the lock is still running
+      if [[ -f "$PIDFILE" ]]; then
+        local -- old_pid
+        old_pid=$(< "$PIDFILE") 2>/dev/null || old_pid=''
+        if [[ -n "$old_pid" ]] && is_process_running "$old_pid"; then
+          error "Lock is stale but process $old_pid is still running"
+          die 1 "Lock held by PID $old_pid (running for ${MAX_AGE_HOURS}+ hours)"
+        fi
+      fi
+      clean_stale_lock
+    fi
+  fi
+
+  # Steal lock if requested
+  if ((STEAL_MODE)); then
+    steal_lock
+  fi
+
+  # Try to acquire lock using flock
+  # Open file descriptor 200 for the lock file
+  exec 200>"$LOCKFILE"
+
+  # Determine flock options based on timeout and wait mode
+  local -a flock_opts=()
+  if ((TIMEOUT_SECONDS)); then
+    # Timeout mode: wait up to specified seconds
+    flock_opts=(-w "$TIMEOUT_SECONDS")
+  elif ((WAIT_MODE)); then
+    # Wait indefinitely (no options needed for flock)
+    :
+  else
+    # Non-blocking mode (default)
+    flock_opts=(-n)
+  fi
+
+  # Attempt to acquire the lock
+  if ! flock "${flock_opts[@]}" 200; then
+    # Lock acquisition failed
+    if ((WAIT_MODE)) && ((TIMEOUT_SECONDS)); then
+      die 1 "Timeout after ${TIMEOUT_SECONDS} seconds waiting for lock ${LOCKNAME@Q}"
+    else
+      if [[ -f "$PIDFILE" ]]; then
+        local -- holder_pid
+        holder_pid=$(< "$PIDFILE") 2>/dev/null || holder_pid='unknown'
+        die 1 "Lock ${LOCKNAME@Q} is currently held by PID $holder_pid"
+      else
+        die 1 "Lock ${LOCKNAME@Q} is currently held"
+      fi
+    fi
+  fi
+
+  # Lock acquired - write our PID
+  echo $$ > "$PIDFILE"
+
+  # Setup cleanup trap
+  trap cleanup EXIT
+
+  # Execute the command
+  local -i exit_code=0
+  "$@" || exit_code=$?
+
+  ((exit_code==0)) || die 3 "Command failed with exit code $exit_code"
+
+  exit 0
+}
+
+main "$@"
+#fin
