@@ -1,6 +1,6 @@
-% SHLOCK(1) shlock 1.0.0
+% SHLOCK(1) shlock 1.0.1
 % Gary Dean (Biksu Okusi)
-% October 2025
+% March 2026
 
 # NAME
 
@@ -14,7 +14,7 @@ shlock - file-based locking utility with stale lock detection
 
 **shlock** provides exclusive file-based locking using **flock**(1) for safe concurrent script execution. It prevents multiple instances of the same operation from running simultaneously and includes automatic stale lock detection for cleanup of locks left behind by crashed processes.
 
-The lock is held using kernel-level **flock**(1) on a file in **/run/lock/**, ensuring atomic lock acquisition and automatic release when the process terminates. A separate PID file tracks which process holds the lock for informational purposes and stale lock validation.
+The lock is held using kernel-level **flock**(1) on a lock file, ensuring atomic lock acquisition and automatic release when the process terminates. A separate PID file tracks which process holds the lock for informational purposes and stale lock validation. The lock directory is automatically determined with fallback (see **FILES**).
 
 ## Key Features
 
@@ -22,6 +22,7 @@ The lock is held using kernel-level **flock**(1) on a file in **/run/lock/**, en
 - **Stale lock detection**: Automatically removes locks from dead processes
 - **Flexible waiting modes**: Non-blocking, timeout-based, or indefinite waiting
 - **PID tracking**: Identifies which process holds each lock
+- **Lock stealing**: Administrative override to break held locks
 - **Clean exit handling**: Automatic cleanup on normal exit or signal termination
 - **Safe for automation**: Designed for cron jobs, systemd services, and CI/CD pipelines
 
@@ -51,8 +52,15 @@ The lock is held using kernel-level **flock**(1) on a file in **/run/lock/**, en
     The process will block until the lock can be acquired.
 
 **-t**, **--timeout** *SECONDS*
-:   Maximum time to wait for lock acquisition in seconds (implies **--wait**).
+:   Maximum time to wait for lock acquisition in seconds.
     If the lock cannot be acquired within this time, exits with code 1.
+    Works independently; does not require **--wait**.
+
+**-s**, **--steal**
+:   Forcefully remove an existing lock. If the lock holder process is dead,
+    the lock is removed automatically without prompting. If the holder is still
+    running, displays a warning and prompts for confirmation before stealing.
+    Exits with code 1 if the user declines.
 
 **-h**, **--help**
 :   Display help message and exit.
@@ -60,7 +68,7 @@ The lock is held using kernel-level **flock**(1) on a file in **/run/lock/**, en
 **-V**, **--version**
 :   Display version information and exit.
 
-**Note**: Short options like **-mwt** are NOT supported (no deaggregation). Use separate flags: **-m** **-w** **-t**.
+**Note**: Short option bundling is supported. The argument-taking option must be last in the bundle. For example: **-wt 60** or **-wm 12**.
 
 # EXIT STATUS
 
@@ -68,7 +76,7 @@ The lock is held using kernel-level **flock**(1) on a file in **/run/lock/**, en
 :   Command executed successfully.
 
 **1**
-:   Lock acquisition failed (already held by another process or timeout expired).
+:   Lock acquisition failed (lock held, timeout expired, no writable lock directory, or steal cancelled).
 
 **2**
 :   Invalid arguments (wrong options, missing required arguments).
@@ -197,6 +205,22 @@ Very short-lived locks (1 hour threshold):
 shlock -m 1 quick-task -- /path/to/task.sh
 ```
 
+## Lock Stealing
+
+Steal a lock from a dead or running process:
+
+```bash
+shlock --steal backup -- /usr/local/bin/backup.sh
+```
+
+Combine steal with short option bundling:
+
+```bash
+shlock -st 30 backup -- /usr/local/bin/backup.sh
+```
+
+If the lock holder is dead, the lock is removed automatically. If the holder is still running, **shlock** displays a warning and prompts for confirmation.
+
 ## Error Handling in Scripts
 
 Distinguish between locked and failed:
@@ -235,11 +259,13 @@ exit 1
 **shlock** uses a multi-phase approach to lock acquisition:
 
 1. **Argument parsing**: Resolves *LOCKNAME* from arguments or derives from *COMMAND* basename
-2. **Stale lock check**: Validates lock age and process liveness, removes stale locks
-3. **Lock acquisition**: Opens file descriptor 200 on **/run/lock/<LOCKNAME>.lock** and attempts **flock**(1)
-4. **PID tracking**: Writes current process ID to **/run/lock/<LOCKNAME>.pid**
-5. **Command execution**: Runs *COMMAND* while holding lock, captures exit code
-6. **Cleanup**: EXIT trap removes PID file, **flock** releases when fd closes
+2. **Lock directory determination**: Selects first writable directory from `/run/lock`, `/var/lock`, `/tmp/locks`
+3. **Stale lock check**: Validates lock age and process liveness, removes stale locks
+4. **Lock stealing** (if **--steal**): Removes existing lock, prompting only if holder is still running
+5. **Lock acquisition**: Opens file descriptor 200 on **<LOCK_DIR>/<LOCKNAME>.lock** and attempts **flock**(1)
+6. **PID tracking**: Writes current process ID to **<LOCK_DIR>/<LOCKNAME>.pid**
+7. **Command execution**: Runs *COMMAND* while holding lock, captures exit code
+8. **Cleanup**: EXIT trap removes PID file, **flock** releases when fd closes
 
 ## File Descriptor 200
 
@@ -253,27 +279,27 @@ If your scripts use fd 200, this may cause conflicts. Consider modifying **shloc
 
 ## Lock File Persistence
 
-Lock files at **/run/lock/<LOCKNAME>.lock** are NOT deleted after use. They persist (empty) for reuse on subsequent acquisitions. This is intentional and follows standard **flock**(1) behavior:
+Lock files at **<LOCK_DIR>/<LOCKNAME>.lock** are NOT deleted after use. They persist (empty) for reuse on subsequent acquisitions. This is intentional and follows standard **flock**(1) behavior:
 
 - Avoids race conditions during lock file recreation
 - Reduces filesystem operations
 - Enables atomic lock semantics
 
-The PID file (**/run/lock/<LOCKNAME>.pid**) is temporary and removed by the EXIT trap when the process terminates.
+The PID file (**<LOCK_DIR>/<LOCKNAME>.pid**) is temporary and removed by the EXIT trap when the process terminates.
 
 ## Stale Lock Detection Algorithm
 
 When **--max-age** threshold is exceeded:
 
 1. Check if lock file exists and read its modification time
-2. Calculate age in hours
-3. If age > **--max-age**:
-   - Read PID from **/run/lock/<LOCKNAME>.pid**
+2. Calculate age in seconds
+3. If age > **--max-age** (converted to seconds):
+   - Read PID from **<LOCK_DIR>/<LOCKNAME>.pid**
    - Check if process is still running via `kill -0 <PID>`
-   - If process dead: remove both **.lock** and **.pid** files
-   - If process alive: lock is not stale, proceed normally
+   - If process dead: remove both **.lock** and **.pid** files (stale lock cleaned)
+   - If process alive: exit with error code 1 (lock held by long-running process)
 
-This ensures locks from crashed processes don't block future executions indefinitely.
+This ensures locks from crashed processes don't block future executions indefinitely, while still respecting legitimately long-running processes.
 
 ## Waiting Modes
 

@@ -14,7 +14,7 @@
 . ftr VB CB
 . ftr VBI CBI
 .\}
-.TH "SHLOCK" "1" "October 2025" "shlock 1.0.0" ""
+.TH "SHLOCK" "1" "March 2026" "shlock 1.0.1" ""
 .hy
 .SH NAME
 .PP
@@ -31,11 +31,13 @@ It prevents multiple instances of the same operation from running
 simultaneously and includes automatic stale lock detection for cleanup
 of locks left behind by crashed processes.
 .PP
-The lock is held using kernel-level \f[B]flock\f[R](1) on a file in
-\f[B]/run/lock/\f[R], ensuring atomic lock acquisition and automatic
-release when the process terminates.
+The lock is held using kernel-level \f[B]flock\f[R](1) on a lock file,
+ensuring atomic lock acquisition and automatic release when the process
+terminates.
 A separate PID file tracks which process holds the lock for
 informational purposes and stale lock validation.
+The lock directory is automatically determined with fallback (see
+\f[B]FILES\f[R]).
 .SS Key Features
 .IP \[bu] 2
 \f[B]Exclusive locking\f[R]: Only one instance of a locked operation can
@@ -48,6 +50,8 @@ processes
 indefinite waiting
 .IP \[bu] 2
 \f[B]PID tracking\f[R]: Identifies which process holds each lock
+.IP \[bu] 2
+\f[B]Lock stealing\f[R]: Administrative override to break held locks
 .IP \[bu] 2
 \f[B]Clean exit handling\f[R]: Automatic cleanup on normal exit or
 signal termination
@@ -85,9 +89,17 @@ immediately.
 The process will block until the lock can be acquired.
 .TP
 \f[B]-t\f[R], \f[B]\[en]timeout\f[R] \f[I]SECONDS\f[R]
-Maximum time to wait for lock acquisition in seconds (implies
-\f[B]\[en]wait\f[R]).
+Maximum time to wait for lock acquisition in seconds.
 If the lock cannot be acquired within this time, exits with code 1.
+Works independently; does not require \f[B]\[en]wait\f[R].
+.TP
+\f[B]-s\f[R], \f[B]\[en]steal\f[R]
+Forcefully remove an existing lock.
+If the lock holder process is dead, the lock is removed automatically
+without prompting.
+If the holder is still running, displays a warning and prompts for
+confirmation before stealing.
+Exits with code 1 if the user declines.
 .TP
 \f[B]-h\f[R], \f[B]\[en]help\f[R]
 Display help message and exit.
@@ -95,17 +107,17 @@ Display help message and exit.
 \f[B]-V\f[R], \f[B]\[en]version\f[R]
 Display version information and exit.
 .PP
-\f[B]Note\f[R]: Short options like \f[B]-mwt\f[R] are NOT supported (no
-deaggregation).
-Use separate flags: \f[B]-m\f[R] \f[B]-w\f[R] \f[B]-t\f[R].
+\f[B]Note\f[R]: Short option bundling is supported.
+The argument-taking option must be last in the bundle.
+For example: \f[B]-wt 60\f[R] or \f[B]-wm 12\f[R].
 .SH EXIT STATUS
 .TP
 \f[B]0\f[R]
 Command executed successfully.
 .TP
 \f[B]1\f[R]
-Lock acquisition failed (already held by another process or timeout
-expired).
+Lock acquisition failed (lock held, timeout expired, no writable lock
+directory, or steal cancelled).
 .TP
 \f[B]2\f[R]
 Invalid arguments (wrong options, missing required arguments).
@@ -254,6 +266,27 @@ Very short-lived locks (1 hour threshold):
 shlock -m 1 quick-task -- /path/to/task.sh
 \f[R]
 .fi
+.SS Lock Stealing
+.PP
+Steal a lock from a dead or running process:
+.IP
+.nf
+\f[C]
+shlock --steal backup -- /usr/local/bin/backup.sh
+\f[R]
+.fi
+.PP
+Combine steal with short option bundling:
+.IP
+.nf
+\f[C]
+shlock -st 30 backup -- /usr/local/bin/backup.sh
+\f[R]
+.fi
+.PP
+If the lock holder is dead, the lock is removed automatically.
+If the holder is still running, \f[B]shlock\f[R] displays a warning and
+prompts for confirmation.
 .SS Error Handling in Scripts
 .PP
 Distinguish between locked and failed:
@@ -296,18 +329,23 @@ exit 1
 \f[B]Argument parsing\f[R]: Resolves \f[I]LOCKNAME\f[R] from arguments
 or derives from \f[I]COMMAND\f[R] basename
 .IP "2." 3
+\f[B]Lock directory determination\f[R]: Selects first writable directory
+from \f[V]/run/lock\f[R], \f[V]/var/lock\f[R], \f[V]/tmp/locks\f[R]
+.IP "3." 3
 \f[B]Stale lock check\f[R]: Validates lock age and process liveness,
 removes stale locks
-.IP "3." 3
-\f[B]Lock acquisition\f[R]: Opens file descriptor 200 on
-\f[B]/run/lock/.lock\f[R] and attempts \f[B]flock\f[R](1)
 .IP "4." 3
-\f[B]PID tracking\f[R]: Writes current process ID to
-\f[B]/run/lock/.pid\f[R]
+\f[B]Lock stealing\f[R] (if \f[B]\[en]steal\f[R]): Removes existing
+lock, prompting only if holder is still running
 .IP "5." 3
+\f[B]Lock acquisition\f[R]: Opens file descriptor 200 on
+\f[B]/.lock\f[R] and attempts \f[B]flock\f[R](1)
+.IP "6." 3
+\f[B]PID tracking\f[R]: Writes current process ID to \f[B]/.pid\f[R]
+.IP "7." 3
 \f[B]Command execution\f[R]: Runs \f[I]COMMAND\f[R] while holding lock,
 captures exit code
-.IP "6." 3
+.IP "8." 3
 \f[B]Cleanup\f[R]: EXIT trap removes PID file, \f[B]flock\f[R] releases
 when fd closes
 .SS File Descriptor 200
@@ -326,7 +364,7 @@ Consider modifying \f[B]shlock\f[R] or avoiding fd 200 in wrapped
 commands.
 .SS Lock File Persistence
 .PP
-Lock files at \f[B]/run/lock/.lock\f[R] are NOT deleted after use.
+Lock files at \f[B]/.lock\f[R] are NOT deleted after use.
 They persist (empty) for reuse on subsequent acquisitions.
 This is intentional and follows standard \f[B]flock\f[R](1) behavior:
 .IP \[bu] 2
@@ -336,30 +374,33 @@ Reduces filesystem operations
 .IP \[bu] 2
 Enables atomic lock semantics
 .PP
-The PID file (\f[B]/run/lock/.pid\f[R]) is temporary and removed by the
-EXIT trap when the process terminates.
+The PID file (\f[B]/.pid\f[R]) is temporary and removed by the EXIT trap
+when the process terminates.
 .SS Stale Lock Detection Algorithm
 .PP
 When \f[B]\[en]max-age\f[R] threshold is exceeded:
 .IP "1." 3
 Check if lock file exists and read its modification time
 .IP "2." 3
-Calculate age in hours
+Calculate age in seconds
 .IP "3." 3
-If age > \f[B]\[en]max-age\f[R]:
+If age > \f[B]\[en]max-age\f[R] (converted to seconds):
 .RS 4
 .IP \[bu] 2
-Read PID from \f[B]/run/lock/.pid\f[R]
+Read PID from \f[B]/.pid\f[R]
 .IP \[bu] 2
 Check if process is still running via \f[V]kill -0 <PID>\f[R]
 .IP \[bu] 2
 If process dead: remove both \f[B].lock\f[R] and \f[B].pid\f[R] files
+(stale lock cleaned)
 .IP \[bu] 2
-If process alive: lock is not stale, proceed normally
+If process alive: exit with error code 1 (lock held by long-running
+process)
 .RE
 .PP
 This ensures locks from crashed processes don\[cq]t block future
-executions indefinitely.
+executions indefinitely, while still respecting legitimately
+long-running processes.
 .SS Waiting Modes
 .PP
 Three distinct locking modes are supported:

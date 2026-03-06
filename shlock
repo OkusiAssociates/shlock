@@ -21,22 +21,23 @@
 # OPTIONS:
 #   -m, --max-age HOURS     Maximum lock age in hours (default: 24)
 #   -w, --wait              Wait indefinitely for lock to become available
-#   -t, --timeout SECONDS   Maximum time to wait for lock (implies --wait)
+#   -t, --timeout SECONDS   Maximum time to wait for lock
 #   -s, --steal             Forcefully remove existing lock (prompts only if process running)
 #   -h, --help              Display this help message
 #   -V, --version           Display version information
 #
 # LOCKING MECHANISM:
-#   - Uses flock(1) on /run/lock/<LOCKNAME>.lock for exclusive locking
-#   - PID file at /run/lock/<LOCKNAME>.pid tracks lock holder
+#   - Uses flock(1) on <LOCKDIR>/<LOCKNAME>.lock for exclusive locking
+#   - PID file at <LOCKDIR>/<LOCKNAME>.pid tracks lock holder
+#   - Lock directory fallback: /run/lock → /var/lock → /tmp/locks
 #   - Non-blocking by default (fails immediately if lock is held)
 #   - With -w/--wait: blocks until lock is available
-#   - With -t/--timeout: waits up to specified seconds (implies --wait)
+#   - With -t/--timeout: waits up to specified seconds
 #   - Stale lock detection: removes locks older than max-age with dead processes
 #
 # EXIT CODES:
 #   0 - Command executed successfully
-#   1 - Lock acquisition failed (held by another process or timeout)
+#   1 - Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled)
 #   2 - Invalid arguments
 #   3 - Command failed
 #
@@ -208,14 +209,14 @@ Arguments:
 Options:
   -m, --max-age HOURS      Maximum lock age in hours (default: $MAX_AGE_HOURS)
   -w, --wait               Wait indefinitely for lock to become available
-  -t, --timeout SECONDS    Maximum time to wait for lock (implies --wait)
+  -t, --timeout SECONDS    Maximum time to wait for lock
   -s, --steal              Forcefully remove existing lock (prompts only if process running)
   -h, --help               Display this help message
   -V, --version            Display version information
 
 Exit codes:
   0   - Command executed successfully
-  1   - Lock acquisition failed (lock held by another process or timeout)
+  1   - Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled)
   2   - Invalid arguments
   3   - Command failed
 
@@ -334,7 +335,7 @@ main() {
   # Open file descriptor 200 for the lock file
   exec 200>"$LOCKFILE"
 
-  # Determine flock options based on timeout and wait mode
+  # Determine flock options (timeout takes priority over wait mode)
   local -a flock_opts=()
   if ((TIMEOUT_SECONDS)); then
     # Timeout mode: wait up to specified seconds
@@ -350,7 +351,7 @@ main() {
   # Attempt to acquire the lock
   if ! flock "${flock_opts[@]}" 200; then
     # Lock acquisition failed
-    if ((WAIT_MODE)) && ((TIMEOUT_SECONDS)); then
+    if ((TIMEOUT_SECONDS)); then
       die 1 "Timeout after ${TIMEOUT_SECONDS} seconds waiting for lock ${LOCKNAME@Q}"
     else
       if [[ -f "$PIDFILE" ]]; then

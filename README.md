@@ -26,9 +26,10 @@ A robust, production-ready file-based locking utility using `flock(1)` for safe 
   - Timeout: Wait up to a specified number of seconds
 - **PID Tracking**: Tracks which process holds each lock
 - **Clean Exit Handling**: Automatic lock cleanup on normal exit or signal termination
+- **Lock Stealing**: Administrative override to break held or abandoned locks (`--steal`)
 - **Safe for Automation**: Ideal for cron jobs, systemd services, and CI/CD pipelines
 - **Comprehensive Error Messages**: Clear, actionable error reporting
-- **Battle-tested**: 103 comprehensive test cases
+- **Battle-tested**: 126 comprehensive test cases
 
 ## Installation
 
@@ -157,7 +158,7 @@ brew install pandoc
 
 Bash completion is automatically installed with `make install` or `./install.sh install`. It provides intelligent tab-completion for:
 
-- **Options**: `-m`, `-w`, `-t`, `--max-age`, `--wait`, `--timeout`, `--help`, `--version`
+- **Options**: `-m`, `-w`, `-t`, `-s`, `--max-age`, `--wait`, `--timeout`, `--steal`, `--help`, `--version`
 - **Lock names**: Existing locks from `/run/lock/*.lock`
 - **Commands**: After `--`, completes available commands and files
 
@@ -173,7 +174,7 @@ echo 'source /path/to/shlock.bash_completion' >> ~/.bashrc
 
 **Usage examples:**
 ```bash
-shlock --<TAB>         # Shows: --help --max-age --timeout --version --wait
+shlock --<TAB>         # Shows: --help --max-age --steal --timeout --version --wait
 shlock -m <TAB>        # Suggests hours values
 shlock -t <TAB>        # Suggests seconds values
 shlock backup<TAB>     # Shows existing lock names starting with 'backup'
@@ -232,9 +233,10 @@ shlock [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
 
 | Option | Argument | Description |
 |--------|----------|-------------|
-| `--max-age` | HOURS | Maximum lock age before considered stale (default: 24) |
-| `--wait` | - | Wait indefinitely for lock to become available |
-| `--timeout` | SECONDS | Maximum time to wait for lock (implies `--wait`) |
+| `-m, --max-age` | HOURS | Maximum lock age before considered stale (default: 24) |
+| `-w, --wait` | - | Wait indefinitely for lock to become available |
+| `-t, --timeout` | SECONDS | Maximum time to wait for lock |
+| `-s, --steal` | - | Forcefully remove existing lock (prompts if holder is running) |
 | `-h, --help` | - | Display help message |
 | `-V, --version` | - | Display version information |
 
@@ -243,7 +245,7 @@ shlock [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
 | Code | Meaning |
 |------|---------|
 | 0 | Command executed successfully |
-| 1 | Lock acquisition failed (held by another process or timeout) |
+| 1 | Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled) |
 | 2 | Invalid arguments |
 | 3 | Command failed |
 
@@ -292,6 +294,18 @@ shlock --timeout 300 report -- /usr/local/bin/generate-report.sh
 
 # Critical task with short timeout
 shlock --timeout 10 healthcheck -- curl -f http://localhost/health
+```
+
+### Lock Stealing
+
+Break held or abandoned locks:
+
+```bash
+# Steal lock from dead process (automatic, no prompt)
+shlock --steal backup -- /usr/local/bin/backup.sh
+
+# Steal lock from running process (prompts for confirmation)
+shlock --steal deployment -- ./deploy.sh production
 ```
 
 ### Cron Job Usage
@@ -365,10 +379,11 @@ fi
 3. **Lock File Creation**: Creates a lock file at `<LOCK_DIR>/<LOCKNAME>.lock`
 4. **Stale Lock Check**: If lock file exists, checks if it's older than `--max-age` hours
 5. **Process Validation**: Verifies if the process that created the lock is still running
-6. **Lock Acquisition**: Uses `flock(1)` for atomic, kernel-level locking
-7. **PID Tracking**: Writes the script's PID to `<LOCK_DIR>/<LOCKNAME>.pid`
-8. **Command Execution**: Runs the specified command while holding the lock
-9. **Cleanup**: Automatically removes PID file on exit; lock file persists for reuse
+6. **Lock Stealing** (optional): If `--steal` is specified, removes existing lock (auto-cleans dead process locks, prompts for running processes)
+7. **Lock Acquisition**: Uses `flock(1)` for atomic, kernel-level locking
+8. **PID Tracking**: Writes the script's PID to `<LOCK_DIR>/<LOCKNAME>.pid`
+9. **Command Execution**: Runs the specified command while holding the lock
+10. **Cleanup**: Automatically removes PID file on exit; lock file persists for reuse
 
 ### File Locations
 
@@ -405,6 +420,7 @@ If a lock is stale but the process is still running, the lock acquisition fails 
 **Timeout (`--timeout SECONDS`)**:
 - Waits up to specified seconds for lock
 - Fails with exit code 1 if timeout expires
+- Works independently — does not require `--wait`. If both are specified, `--timeout` takes priority
 - Best for: Tasks with time constraints
 
 ## Use Cases
@@ -449,9 +465,16 @@ shlock indexing -- /usr/local/bin/rebuild-search-index.sh
 shlock --timeout 30 service-restart -- systemctl restart myservice
 ```
 
+### 6. Break Abandoned Locks
+
+```bash
+# When a lock was left behind by a crashed process
+shlock --steal backup -- /usr/local/bin/backup.sh
+```
+
 ## Testing
 
-The utility includes a comprehensive test suite with 103 test cases covering all functionality.
+The utility includes a comprehensive test suite with 126 test cases covering all functionality.
 
 ### Running Tests
 
@@ -467,11 +490,12 @@ cd /ai/scripts/lib/shlock/tests
 
 ### Test Coverage
 
-- **test_basic.sh** (15 tests): Basic functionality, argument handling, exit codes
+- **test_basic.sh** (20 tests): Basic functionality, argument handling, exit codes, short option bundling
 - **test_concurrent.sh** (13 tests): Concurrent lock acquisition, race conditions
 - **test_edge_cases.sh** (24 tests): Edge cases, stress tests, special characters
-- **test_errors.sh** (27 tests): Error handling, invalid inputs, signal handling
+- **test_errors.sh** (36 tests): Error handling, invalid inputs, signal handling, LOCKNAME sanitization
 - **test_stale_locks.sh** (11 tests): Stale lock detection, max-age thresholds
+- **test_steal.sh** (9 tests): Lock stealing, dead/running process handling, steal combinations
 - **test_wait_timeout.sh** (13 tests): Blocking mode, timeout behavior, queuing
 
 ## Troubleshooting
@@ -482,6 +506,9 @@ cd /ai/scripts/lib/shlock/tests
 
 **Solutions**:
 ```bash
+# Use --steal to break a held lock
+shlock --steal YOUR_LOCKNAME -- your-command
+
 # Check for lock files
 ls -la /run/lock/YOUR_LOCKNAME.*
 
@@ -489,7 +516,7 @@ ls -la /run/lock/YOUR_LOCKNAME.*
 cat /run/lock/YOUR_LOCKNAME.pid
 ps -p $(cat /run/lock/YOUR_LOCKNAME.pid)
 
-# Force remove stale lock (use with caution)
+# Force remove stale lock manually (use with caution)
 rm -f /run/lock/YOUR_LOCKNAME.lock /run/lock/YOUR_LOCKNAME.pid
 ```
 
@@ -704,7 +731,7 @@ A: Yes, but note that locks are container-scoped. Different containers don't sha
 A: Yes, you can lock any executable: `shlock task -- python3 script.py` or `shlock task -- /usr/bin/my-binary`
 
 **Q: How many locks can I have?**
-A: Practically unlimited. Each lock is just two small files in `/run/lock`.
+A: Practically unlimited. Each lock is just two small files in the lock directory.
 
 ## Contributing
 
@@ -725,6 +752,6 @@ This utility is part of the Okusi Group bash scripting standard library.
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2025-10-23
+**Version**: 1.0.1
+**Last Updated**: 2026-03-06
 **Maintainer**: Gary Dean (Biksu Okusi)
