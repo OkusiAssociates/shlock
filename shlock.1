@@ -361,9 +361,10 @@ removes stale locks
 lock, prompting only if holder is still running
 .IP "5." 3
 \f[B]Lock acquisition\f[R]: Opens file descriptor 200 on
-\f[B]/.lock\f[R] and attempts \f[B]flock\f[R](1)
+\f[V]<LOCK_DIR>/<LOCKNAME>.lock\f[R] and attempts \f[B]flock\f[R](1)
 .IP "6." 3
-\f[B]PID tracking\f[R]: Writes current process ID to \f[B]/.pid\f[R]
+\f[B]PID tracking\f[R]: Writes current process ID to
+\f[V]<LOCK_DIR>/<LOCKNAME>.pid\f[R]
 .IP "7." 3
 \f[B]Command execution\f[R]: Runs \f[I]COMMAND\f[R] while holding lock,
 captures exit code
@@ -386,7 +387,8 @@ Consider modifying \f[B]shlock\f[R] or avoiding fd 200 in wrapped
 commands.
 .SS Lock File Persistence
 .PP
-Lock files at \f[B]/.lock\f[R] are NOT deleted after use.
+Lock files at \f[V]<LOCK_DIR>/<LOCKNAME>.lock\f[R] are NOT deleted after
+use.
 They persist (empty) for reuse on subsequent acquisitions.
 This is intentional and follows standard \f[B]flock\f[R](1) behavior:
 .IP \[bu] 2
@@ -396,8 +398,8 @@ Reduces filesystem operations
 .IP \[bu] 2
 Enables atomic lock semantics
 .PP
-The PID file (\f[B]/.pid\f[R]) is temporary and removed by the EXIT trap
-when the process terminates.
+The PID file (\f[V]<LOCK_DIR>/<LOCKNAME>.pid\f[R]) is temporary and
+removed by the EXIT trap when the process terminates.
 .SS Stale Lock Detection Algorithm
 .PP
 Before attempting to acquire the lock, \f[B]shlock\f[R] examines the
@@ -405,7 +407,8 @@ existing lock file and applies one of two cleanup paths:
 .IP "1." 3
 Check if lock file exists; read modification time (mtime).
 .IP "2." 3
-Read PID from \f[B]/.pid\f[R] (validated as positive integer).
+Read PID from \f[V]<LOCK_DIR>/<LOCKNAME>.pid\f[R] (validated as positive
+integer).
 .IP "3." 3
 \f[B]Age-based path\f[R] \[em] if age > \f[B]\[en]max-age\f[R]
 (converted to seconds):
@@ -536,13 +539,13 @@ deploy:
 .fi
 .SH FILES
 .TP
-\f[B]/.lock\f[R]
+\f[V]<LOCK_DIR>/<LOCKNAME>.lock\f[R]
 Lock file used for \f[B]flock\f[R](1) operations.
 Persists (empty) after use for reuse.
-The location of is automatically determined (see Lock Directory
-Selection below).
+The location of \f[V]<LOCK_DIR>\f[R] is automatically determined (see
+Lock Directory Selection below).
 .TP
-\f[B]/.pid\f[R]
+\f[V]<LOCK_DIR>/<LOCKNAME>.pid\f[R]
 PID file containing process ID of lock holder.
 Removed by EXIT trap.
 Used for informational error messages and stale lock validation.

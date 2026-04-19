@@ -277,8 +277,8 @@ exit 1
 2. **Lock directory determination**: Selects first writable directory from `/run/lock`, `/var/lock`, `/tmp/locks`
 3. **Stale lock check**: Validates lock age and process liveness, removes stale locks
 4. **Lock stealing** (if **--steal**): Removes existing lock, prompting only if holder is still running
-5. **Lock acquisition**: Opens file descriptor 200 on **<LOCK_DIR>/<LOCKNAME>.lock** and attempts **flock**(1)
-6. **PID tracking**: Writes current process ID to **<LOCK_DIR>/<LOCKNAME>.pid**
+5. **Lock acquisition**: Opens file descriptor 200 on `<LOCK_DIR>/<LOCKNAME>.lock` and attempts **flock**(1)
+6. **PID tracking**: Writes current process ID to `<LOCK_DIR>/<LOCKNAME>.pid`
 7. **Command execution**: Runs *COMMAND* while holding lock, captures exit code
 8. **Cleanup**: EXIT trap removes PID file, **flock** releases when fd closes
 
@@ -294,20 +294,20 @@ If your scripts use fd 200, this may cause conflicts. Consider modifying **shloc
 
 ## Lock File Persistence
 
-Lock files at **<LOCK_DIR>/<LOCKNAME>.lock** are NOT deleted after use. They persist (empty) for reuse on subsequent acquisitions. This is intentional and follows standard **flock**(1) behavior:
+Lock files at `<LOCK_DIR>/<LOCKNAME>.lock` are NOT deleted after use. They persist (empty) for reuse on subsequent acquisitions. This is intentional and follows standard **flock**(1) behavior:
 
 - Avoids race conditions during lock file recreation
 - Reduces filesystem operations
 - Enables atomic lock semantics
 
-The PID file (**<LOCK_DIR>/<LOCKNAME>.pid**) is temporary and removed by the EXIT trap when the process terminates.
+The PID file (`<LOCK_DIR>/<LOCKNAME>.pid`) is temporary and removed by the EXIT trap when the process terminates.
 
 ## Stale Lock Detection Algorithm
 
 Before attempting to acquire the lock, **shlock** examines the existing lock file and applies one of two cleanup paths:
 
 1. Check if lock file exists; read modification time (mtime).
-2. Read PID from **<LOCK_DIR>/<LOCKNAME>.pid** (validated as positive integer).
+2. Read PID from `<LOCK_DIR>/<LOCKNAME>.pid` (validated as positive integer).
 3. **Age-based path** — if age > **--max-age** (converted to seconds):
     - If process is dead (`kill -0 <PID>` fails): remove both **.lock** and **.pid** files.
     - If process is alive: exit with code 1 (lock held by long-running process).
@@ -408,11 +408,11 @@ deploy:
 
 # FILES
 
-**<LOCK_DIR>/<LOCKNAME>.lock**
+`<LOCK_DIR>/<LOCKNAME>.lock`
 :   Lock file used for **flock**(1) operations. Persists (empty) after use for reuse.
-    The location of <LOCK_DIR> is automatically determined (see Lock Directory Selection below).
+    The location of `<LOCK_DIR>` is automatically determined (see Lock Directory Selection below).
 
-**<LOCK_DIR>/<LOCKNAME>.pid**
+`<LOCK_DIR>/<LOCKNAME>.pid`
 :   PID file containing process ID of lock holder. Removed by EXIT trap.
     Used for informational error messages and stale lock validation.
 
