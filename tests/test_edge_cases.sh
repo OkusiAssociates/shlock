@@ -146,7 +146,7 @@ LOCK_SCRIPT="$1"
 EOF
 chmod +x "$NESTED_SCRIPT"
 
-assert_exit_code "Nested lock attempt fails" 3 \
+assert_exit_code "Nested lock attempt fails (propagates inner shlock's exit 1)" 1 \
   "$LOCK_SCRIPT" test_edge_nested -- "$NESTED_SCRIPT" "$LOCK_SCRIPT"
 
 rm -f "$NESTED_SCRIPT"

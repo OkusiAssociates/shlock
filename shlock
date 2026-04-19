@@ -35,11 +35,14 @@
 #   - With -t/--timeout: waits up to specified seconds
 #   - Stale lock detection: removes locks older than --max-age or with dead holders
 #
-# EXIT CODES:
-#   0 - Command executed successfully
-#   1 - Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled)
-#   2 - Invalid arguments
-#   3 - Command failed
+# EXIT CODES (BCS-canonical):
+#   0   - Command executed successfully (wrapped command exit code passed through)
+#   1   - Lock held (non-timeout acquisition failure) or steal cancelled by user
+#   2   - Usage error (missing COMMAND or -- separator)
+#   13  - Permission denied (no writable lock directory)
+#   22  - Invalid argument (unknown option, bad LOCKNAME, non-numeric value)
+#   24  - Timeout (--timeout N expired)
+#   *   - Any other code: propagated from the wrapped command
 #
 # EXAMPLES:
 #   # Non-blocking lock (default)
@@ -77,7 +80,7 @@ umask 0022
 declare -rx PATH=${HOME:-/root}/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # Script metadata
-declare -r VERSION=1.0.4
+declare -r VERSION=2.0.0
 declare -r SCRIPT_NAME=${0##*/}
 
 # Global variables
@@ -125,11 +128,14 @@ Options:
   -h, --help               Display this help message
   -V, --version            Display version information
 
-Exit codes:
-  0   - Command executed successfully
-  1   - Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled)
-  2   - Invalid arguments
-  3   - Command failed
+Exit codes (BCS-canonical):
+  0   - Command executed successfully (wrapped command exit code passed through)
+  1   - Lock held (non-timeout acquisition failure) or steal cancelled by user
+  2   - Usage error (missing COMMAND or -- separator)
+  13  - Permission denied (no writable lock directory)
+  22  - Invalid argument (unknown option, bad LOCKNAME, non-numeric value)
+  24  - Timeout (--timeout N expired)
+  *   - Any other code: propagated from the wrapped command
 
 Examples:
   # Non-blocking (default)
@@ -160,7 +166,7 @@ HELP
 # Validate that $2 exists and is numeric, die with error if not
 arg2_num() {
   if (($# < 2)) || [[ ! $2 =~ ^[0-9]+$ ]]; then
-    die 2 "${1@Q} requires a numeric argument"
+    die 22 "${1@Q} requires a numeric argument"
   fi
 }
 
@@ -307,7 +313,7 @@ main() {
         set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue
         ;;
       -*)
-        die 2 "Unknown option ${1@Q}"
+        die 22 "Unknown option ${1@Q}"
         ;;
       *)
         # First non-option argument is the lock name
@@ -325,15 +331,15 @@ main() {
     # Auto-generate LOCKNAME from basename of COMMAND (if not provided)
     # Exit with error if LOCKNAME derivation fails
     LOCKNAME=${1##*/}
-    [[ -n $LOCKNAME ]] || die 2 "LOCKNAME could not be acquired from ${1@Q}"
+    [[ -n $LOCKNAME ]] || die 22 "LOCKNAME could not be acquired from ${1@Q}"
   fi
 
-  [[ $LOCKNAME =~ ^[a-zA-Z0-9._-]+$ ]] || die 2 "Invalid LOCKNAME ${LOCKNAME@Q} (alphanumeric, dots, hyphens, underscores only)"
-  [[ ! $LOCKNAME =~ ^\.+$ ]] || die 2 "Invalid LOCKNAME ${LOCKNAME@Q} (cannot be only dots)"
+  [[ $LOCKNAME =~ ^[a-zA-Z0-9._-]+$ ]] || die 22 "Invalid LOCKNAME ${LOCKNAME@Q} (alphanumeric, dots, hyphens, underscores only)"
+  [[ ! $LOCKNAME =~ ^\.+$ ]] || die 22 "Invalid LOCKNAME ${LOCKNAME@Q} (cannot be only dots)"
 
   # Determine lock directory with fallback
   local -- LOCK_DIR
-  LOCK_DIR=$(determine_lock_dir) || die 1 'Cannot find or create writable lock directory'
+  LOCK_DIR=$(determine_lock_dir) || die 13 'Cannot find or create writable lock directory'
   readonly -- LOCK_DIR
 
   LOCKFILE="$LOCK_DIR"/"$LOCKNAME".lock
@@ -383,7 +389,7 @@ main() {
   if ! flock "${flock_opts[@]}" 200; then
     # Lock acquisition failed
     if ((TIMEOUT_SET)); then
-      die 1 "Timeout after $TIMEOUT_SECONDS seconds waiting for lock ${LOCKNAME@Q}"
+      die 24 "Timeout after $TIMEOUT_SECONDS seconds waiting for lock ${LOCKNAME@Q}"
     else
       local -- holder_pid
       holder_pid=$(read_holder_pid)
@@ -402,9 +408,7 @@ main() {
   local -i exit_code=0
   "$@" || exit_code=$?
 
-  ((exit_code==0)) || die 3 "Command failed with exit code $exit_code"
-
-  exit 0
+  exit "$exit_code"
 }
 
 main "$@"

@@ -14,7 +14,7 @@
 . ftr VB CB
 . ftr VBI CBI
 .\}
-.TH "SHLOCK" "1" "March 2026" "shlock 1.0.4" ""
+.TH "SHLOCK" "1" "April 2026" "shlock 2.0.0" ""
 .hy
 .SH NAME
 .PP
@@ -90,7 +90,7 @@ The process will block until the lock can be acquired.
 .TP
 \f[B]-t\f[R], \f[B]\[en]timeout\f[R] \f[I]SECONDS\f[R]
 Maximum time to wait for lock acquisition in seconds.
-If the lock cannot be acquired within this time, exits with code 1.
+If the lock cannot be acquired within this time, exits with code 24.
 Works independently; does not require \f[B]\[en]wait\f[R].
 .TP
 \f[B]-s\f[R], \f[B]\[en]steal\f[R]
@@ -111,23 +111,41 @@ Display version information and exit.
 The argument-taking option must be last in the bundle.
 For example: \f[B]-wt 60\f[R] or \f[B]-wm 12\f[R].
 .SH EXIT STATUS
+.PP
+Exit codes follow the Bash Coding Standard (BCS) canonical table.
+\f[B]v2.0.0 is a breaking change from v1.0.x\f[R] \[em] callers that
+branch on \f[V]$?\f[R] must update.
 .TP
 \f[B]0\f[R]
-Command executed successfully.
+Command executed successfully (wrapped command\[cq]s exit code was 0,
+passed through).
 .TP
 \f[B]1\f[R]
-Lock acquisition failed (lock held, timeout expired, no writable lock
-directory, or steal cancelled).
+Lock held (non-timeout acquisition failure) or steal cancelled by user.
 .TP
 \f[B]2\f[R]
-Invalid arguments (wrong options, missing required arguments).
+Usage error (missing \f[I]COMMAND\f[R] or \f[V]--\f[R] separator).
 .TP
-\f[B]3\f[R]
-Command failed (command\[cq]s exit code was non-zero).
+\f[B]13\f[R]
+Permission denied (no writable lock directory in \f[V]/run/lock\f[R],
+\f[V]/var/lock\f[R], or \f[V]/tmp/locks\f[R]).
+.TP
+\f[B]22\f[R]
+Invalid argument (unknown option, bad \f[I]LOCKNAME\f[R], non-numeric
+\f[V]-m\f[R]/\f[V]-t\f[R] value).
+.TP
+\f[B]24\f[R]
+Timeout (\f[V]--timeout N\f[R] expired before lock became available).
+.TP
+\f[I]other\f[R]
+Any other non-zero code is propagated unchanged from the wrapped command
+(standard Unix-wrapper convention \[em] matches \f[B]nice\f[R](1),
+\f[B]timeout\f[R](1), \f[B]sudo\f[R](1), \f[B]env\f[R](1)).
 .PP
-The distinction between exit codes 1 and 3 is important for automation:
-code 1 means \[lq]couldn\[cq]t run because locked\[rq], code 3 means
-\[lq]ran but failed\[rq].
+The distinction between code 1 (lock held), code 24 (timed out), and a
+propagated non-zero (wrapped command ran but failed) is important for
+automation.
+Prior to v2.0.0, all three collapsed into codes 1 and 3.
 .SH EXAMPLES
 .SS Basic Usage
 .PP
@@ -181,7 +199,7 @@ Prevent overlapping cron jobs:
 # In /etc/cron.d/backup
 0 2 * * * root shlock daily-backup -- /usr/local/bin/backup.sh
 
-# If previous backup still running, this one exits immediately (code 1)
+# If previous backup still running, this one exits immediately (code 1 = lock held)
 \f[R]
 .fi
 .PP
@@ -189,9 +207,10 @@ Handle cron job failures gracefully:
 .IP
 .nf
 \f[C]
-# Only alert if job ran but failed (exit 3), not if locked (exit 1)
+# Only alert if job actually ran and failed; skip silently when locked or timed out
 0 2 * * * root shlock backup -- /usr/local/bin/backup.sh || \[rs]
-  [ $? -eq 1 ] || mail -s \[dq]Backup failed\[dq] admin\[at]example.com
+  { rc=$?; [ \[dq]$rc\[dq] -eq 1 ] || [ \[dq]$rc\[dq] -eq 24 ] || \[rs]
+    mail -s \[dq]Backup failed (rc=$rc)\[dq] admin\[at]example.com; }
 \f[R]
 .fi
 .SS Systemd Service Integration
@@ -298,9 +317,12 @@ set -euo pipefail
 
 if ! shlock myapp -- /path/to/command; then
   case $? in
-    1) echo \[dq]Already running, skipping...\[dq] >&2; exit 0 ;;
-    2) echo \[dq]Invalid arguments\[dq] >&2; exit 2 ;;
-    3) echo \[dq]Command failed\[dq] >&2; exit 3 ;;
+    1)  echo \[dq]Already running, skipping...\[dq] >&2; exit 0 ;;
+    2)  echo \[dq]Usage error\[dq] >&2; exit 2 ;;
+    13) echo \[dq]No writable lock directory\[dq] >&2; exit 13 ;;
+    22) echo \[dq]Invalid argument\[dq] >&2; exit 22 ;;
+    24) echo \[dq]Timeout waiting for lock\[dq] >&2; exit 24 ;;
+    *)  rc=$?; echo \[dq]Command failed with exit code $rc\[dq] >&2; exit \[dq]$rc\[dq] ;;
   esac
 fi
 \f[R]
@@ -392,7 +414,7 @@ Read PID from \f[B]/.pid\f[R] (validated as positive integer).
 If process is dead (\f[V]kill -0 <PID>\f[R] fails): remove both
 \f[B].lock\f[R] and \f[B].pid\f[R] files.
 .IP \[bu] 2
-If process is alive: exit with error code 1 (lock held by long-running
+If process is alive: exit with code 1 (lock held by long-running
 process).
 .RE
 .IP "4." 3
@@ -417,7 +439,7 @@ Exit code 1 if locked.
 .TP
 \f[B]Timeout mode (\[en]timeout N)\f[R]
 Uses \f[V]flock -w SECONDS\f[R] to wait up to specified time.
-Exit code 1 if timeout expires.
+Exit code 24 if timeout expires.
 .TP
 \f[B]Indefinite wait (\[en]wait)\f[R]
 Uses \f[V]flock\f[R] without flags to wait indefinitely until lock is
@@ -548,7 +570,7 @@ Usually cleared on reboot.
 Only used if both above directories are unavailable.
 .PP
 If none of these directories are writable, \f[B]shlock\f[R] exits with
-error code 1.
+code 13 (permission denied).
 .SH NOTES
 .IP \[bu] 2
 Lock names should be unique within your system to prevent unintended

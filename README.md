@@ -29,7 +29,7 @@ A robust, production-ready file-based locking utility using `flock(1)` for safe 
 - **Lock Stealing**: Administrative override to break held or abandoned locks (`--steal`)
 - **Safe for Automation**: Ideal for cron jobs, systemd services, and CI/CD pipelines
 - **Comprehensive Error Messages**: Clear, actionable error reporting
-- **Battle-tested**: 126 comprehensive test cases
+- **Battle-tested**: 127 comprehensive test cases
 
 ## Installation
 
@@ -242,12 +242,17 @@ shlock [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
 
 ## Exit Codes
 
+> **Breaking change in v2.0.0**: exit codes have been remapped to BCS-canonical values. Callers that branch on `$?` MUST update. See commit message and [CHANGELOG](#changelog) below.
+
 | Code | Meaning |
 |------|---------|
-| 0 | Command executed successfully |
-| 1 | Lock acquisition failed (lock held, timeout, no writable lock dir, or steal cancelled) |
-| 2 | Invalid arguments |
-| 3 | Command failed |
+| 0 | Command executed successfully (wrapped command exit code passed through) |
+| 1 | Lock held (non-timeout acquisition failure) or steal cancelled by user |
+| 2 | Usage error (missing `COMMAND` or `--` separator) |
+| 13 | Permission denied (no writable lock directory) |
+| 22 | Invalid argument (unknown option, bad `LOCKNAME`, non-numeric value) |
+| 24 | Timeout (`--timeout N` expired) |
+| *other* | Propagated from the wrapped command (standard Unix-wrapper convention, matches `nice(1)`, `timeout(1)`, `sudo(1)`, `env(1)`) |
 
 ## Examples
 
@@ -337,7 +342,11 @@ ExecStart=/usr/local/bin/shlock --wait service-name -- /usr/local/bin/your-servi
 # Ensure only one deployment runs at a time
 
 if ! shlock --timeout 60 deploy-prod -- ./deploy.sh production; then
-    echo "Deployment already in progress or timed out"
+    case $? in
+      1)  echo "Deployment already in progress (lock held)" ;;
+      24) echo "Timed out waiting for deployment lock" ;;
+      *)  echo "shlock or deployment failed with code $?" ;;
+    esac
     exit 1
 fi
 ```
@@ -352,15 +361,12 @@ if shlock database-maintenance -- /usr/local/bin/maintenance.sh; then
 else
     exit_code=$?
     case $exit_code in
-        1)
-            echo "Lock is held by another process"
-            ;;
-        2)
-            echo "Invalid arguments"
-            ;;
-        3)
-            echo "Maintenance script failed"
-            ;;
+        1)  echo "Lock is held by another process" ;;
+        2)  echo "Usage error (missing COMMAND or -- separator)" ;;
+        13) echo "Permission denied: no writable lock directory" ;;
+        22) echo "Invalid argument" ;;
+        24) echo "Timeout waiting for lock" ;;
+        *)  echo "Maintenance script exited with code $exit_code" ;;
     esac
     exit $exit_code
 fi
@@ -422,7 +428,7 @@ Both paths leave an existing running holder's lock untouched.
 
 **Timeout (`--timeout SECONDS`)**:
 - Waits up to specified seconds for lock
-- Fails with exit code 1 if timeout expires
+- Fails with exit code 24 if timeout expires
 - Works independently — does not require `--wait`. If both are specified, `--timeout` takes priority
 - Best for: Tasks with time constraints
 
@@ -477,7 +483,7 @@ shlock --steal backup -- /usr/local/bin/backup.sh
 
 ## Testing
 
-The utility includes a comprehensive test suite with 126 test cases covering all functionality.
+The utility includes a comprehensive test suite with 127 test cases covering all functionality.
 
 ### Running Tests
 
@@ -493,7 +499,7 @@ cd /ai/scripts/lib/shlock/tests
 
 ### Test Coverage
 
-- **test_basic.sh** (20 tests): Basic functionality, argument handling, exit codes, short option bundling
+- **test_basic.sh** (21 tests): Basic functionality, argument handling, exit codes, short option bundling, wrapped command propagation
 - **test_concurrent.sh** (13 tests): Concurrent lock acquisition, race conditions
 - **test_edge_cases.sh** (24 tests): Edge cases, stress tests, special characters
 - **test_errors.sh** (36 tests): Error handling, invalid inputs, signal handling, LOCKNAME sanitization
@@ -747,6 +753,29 @@ Contributions are welcome! Please ensure:
 
 This utility is part of the Okusi Group bash scripting standard library.
 
+## Changelog
+
+### v2.0.0 (2026-04-19) — Breaking Change
+
+Exit codes remapped to BCS-canonical values. **No compatibility flag provided** — callers that branch on `$?` MUST update.
+
+Migration:
+
+| Old | New | Meaning |
+|-----|-----|---------|
+| 1 | 1 | Lock held, steal cancelled (unchanged) |
+| 1 | 13 | No writable lock directory |
+| 1 | 24 | `--timeout` expired |
+| 2 | 2 | Missing `COMMAND` or `--` separator (unchanged) |
+| 2 | 22 | Unknown option, invalid `LOCKNAME`, non-numeric `-m`/`-t` |
+| 3 | *propagated* | Wrapped command's own exit code |
+
+The "Command failed with exit code N" message has been removed; the wrapped command's own stderr is authoritative. shlock is now a transparent wrapper matching `nice(1)`, `timeout(1)`, `sudo(1)`, and `env(1)`.
+
+### v1.0.4 and earlier
+
+See `git log`.
+
 ## See Also
 
 - `flock(1)` - Linux manual page
@@ -755,6 +784,6 @@ This utility is part of the Okusi Group bash scripting standard library.
 
 ---
 
-**Version**: 1.0.4
+**Version**: 2.0.0
 **Last Updated**: 2026-04-19
 **Maintainer**: Gary Dean (Biksu Okusi)

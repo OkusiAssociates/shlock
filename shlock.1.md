@@ -1,6 +1,6 @@
-% SHLOCK(1) shlock 1.0.4
+% SHLOCK(1) shlock 2.0.0
 % Gary Dean (Biksu Okusi)
-% March 2026
+% April 2026
 
 # NAME
 
@@ -53,7 +53,7 @@ The lock is held using kernel-level **flock**(1) on a lock file, ensuring atomic
 
 **-t**, **--timeout** *SECONDS*
 :   Maximum time to wait for lock acquisition in seconds.
-    If the lock cannot be acquired within this time, exits with code 1.
+    If the lock cannot be acquired within this time, exits with code 24.
     Works independently; does not require **--wait**.
 
 **-s**, **--steal**
@@ -72,19 +72,30 @@ The lock is held using kernel-level **flock**(1) on a lock file, ensuring atomic
 
 # EXIT STATUS
 
+Exit codes follow the Bash Coding Standard (BCS) canonical table. **v2.0.0 is a breaking change from v1.0.x** — callers that branch on `$?` must update.
+
 **0**
-:   Command executed successfully.
+:   Command executed successfully (wrapped command's exit code was 0, passed through).
 
 **1**
-:   Lock acquisition failed (lock held, timeout expired, no writable lock directory, or steal cancelled).
+:   Lock held (non-timeout acquisition failure) or steal cancelled by user.
 
 **2**
-:   Invalid arguments (wrong options, missing required arguments).
+:   Usage error (missing *COMMAND* or `--` separator).
 
-**3**
-:   Command failed (command's exit code was non-zero).
+**13**
+:   Permission denied (no writable lock directory in `/run/lock`, `/var/lock`, or `/tmp/locks`).
 
-The distinction between exit codes 1 and 3 is important for automation: code 1 means "couldn't run because locked", code 3 means "ran but failed".
+**22**
+:   Invalid argument (unknown option, bad *LOCKNAME*, non-numeric `-m`/`-t` value).
+
+**24**
+:   Timeout (`--timeout N` expired before lock became available).
+
+*other*
+:   Any other non-zero code is propagated unchanged from the wrapped command (standard Unix-wrapper convention — matches **nice**(1), **timeout**(1), **sudo**(1), **env**(1)).
+
+The distinction between code 1 (lock held), code 24 (timed out), and a propagated non-zero (wrapped command ran but failed) is important for automation. Prior to v2.0.0, all three collapsed into codes 1 and 3.
 
 # EXAMPLES
 
@@ -131,15 +142,16 @@ Prevent overlapping cron jobs:
 # In /etc/cron.d/backup
 0 2 * * * root shlock daily-backup -- /usr/local/bin/backup.sh
 
-# If previous backup still running, this one exits immediately (code 1)
+# If previous backup still running, this one exits immediately (code 1 = lock held)
 ```
 
 Handle cron job failures gracefully:
 
 ```bash
-# Only alert if job ran but failed (exit 3), not if locked (exit 1)
+# Only alert if job actually ran and failed; skip silently when locked or timed out
 0 2 * * * root shlock backup -- /usr/local/bin/backup.sh || \
-  [ $? -eq 1 ] || mail -s "Backup failed" admin@example.com
+  { rc=$?; [ "$rc" -eq 1 ] || [ "$rc" -eq 24 ] || \
+    mail -s "Backup failed (rc=$rc)" admin@example.com; }
 ```
 
 ## Systemd Service Integration
@@ -231,9 +243,12 @@ set -euo pipefail
 
 if ! shlock myapp -- /path/to/command; then
   case $? in
-    1) echo "Already running, skipping..." >&2; exit 0 ;;
-    2) echo "Invalid arguments" >&2; exit 2 ;;
-    3) echo "Command failed" >&2; exit 3 ;;
+    1)  echo "Already running, skipping..." >&2; exit 0 ;;
+    2)  echo "Usage error" >&2; exit 2 ;;
+    13) echo "No writable lock directory" >&2; exit 13 ;;
+    22) echo "Invalid argument" >&2; exit 22 ;;
+    24) echo "Timeout waiting for lock" >&2; exit 24 ;;
+    *)  rc=$?; echo "Command failed with exit code $rc" >&2; exit "$rc" ;;
   esac
 fi
 ```
@@ -295,7 +310,7 @@ Before attempting to acquire the lock, **shlock** examines the existing lock fil
 2. Read PID from **<LOCK_DIR>/<LOCKNAME>.pid** (validated as positive integer).
 3. **Age-based path** — if age > **--max-age** (converted to seconds):
     - If process is dead (`kill -0 <PID>` fails): remove both **.lock** and **.pid** files.
-    - If process is alive: exit with error code 1 (lock held by long-running process).
+    - If process is alive: exit with code 1 (lock held by long-running process).
 4. **Holder-based path** — if age ≤ **--max-age** but the holder PID is no longer running:
     - Remove both **.lock** and **.pid** files, log a warning, and proceed.
 
@@ -309,7 +324,7 @@ Three distinct locking modes are supported:
 :   Uses `flock -n` to fail immediately if lock is held. Exit code 1 if locked.
 
 **Timeout mode (--timeout N)**
-:   Uses `flock -w SECONDS` to wait up to specified time. Exit code 1 if timeout expires.
+:   Uses `flock -w SECONDS` to wait up to specified time. Exit code 24 if timeout expires.
 
 **Indefinite wait (--wait)**
 :   Uses `flock` without flags to wait indefinitely until lock is available.
@@ -418,7 +433,7 @@ deploy:
 :   Last resort directory. Automatically created if it doesn't exist.
     Usually cleared on reboot. Only used if both above directories are unavailable.
 
-If none of these directories are writable, **shlock** exits with error code 1.
+If none of these directories are writable, **shlock** exits with code 13 (permission denied).
 
 # NOTES
 

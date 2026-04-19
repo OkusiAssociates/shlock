@@ -107,8 +107,10 @@ echo
 echo "Test: Exit code propagation"
 assert_exit_code "Exit code 0 from successful command" 0 \
   "$LOCK_SCRIPT" test_basic_5 -- true
-assert_exit_code "Exit code 3 from failed command" 3 \
+assert_exit_code "Wrapped 'false' propagates exit code 1" 1 \
   "$LOCK_SCRIPT" test_basic_6 -- false
+assert_exit_code "Wrapped command exit 42 propagates unchanged" 42 \
+  "$LOCK_SCRIPT" test_basic_6b -- bash -c 'exit 42'
 
 echo
 echo "Test: Help option"
@@ -125,7 +127,7 @@ assert_exit_code "Missing command" 2 \
   "$LOCK_SCRIPT" test_basic_7 --
 assert_exit_code "Missing -- separator" 2 \
   "$LOCK_SCRIPT" test_basic_8 echo "test"
-assert_exit_code "Unknown option" 2 \
+assert_exit_code "Unknown option" 22 \
   "$LOCK_SCRIPT" --invalid-option test_basic_9 -- echo "test"
 
 echo
@@ -142,7 +144,7 @@ assert_exit_code "Bundled -sm (steal + max-age)" 0 \
 assert_exit_code "Triple bundle -swt (steal + wait + timeout)" 0 \
   "$LOCK_SCRIPT" -swt 5 test_basic_bundle_4 -- echo "test"
 
-assert_exit_code "Invalid bundle -wz (unknown -z)" 2 \
+assert_exit_code "Invalid bundle -wz (unknown -z)" 22 \
   "$LOCK_SCRIPT" -wz test_basic_bundle_5 -- echo "test"
 
 echo

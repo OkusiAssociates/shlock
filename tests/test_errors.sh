@@ -71,21 +71,21 @@ assert_contains() {
 
 # Tests
 echo "Test: Command failure propagation"
-assert_exit_code "Failed command returns exit code 3" 3 \
+assert_exit_code "Wrapped 'exit 42' propagates code 42" 42 \
   "$LOCK_SCRIPT" test_error_1 -- bash -c 'exit 42'
 
-assert_exit_code "Another failed command returns exit code 3" 3 \
+assert_exit_code "Wrapped 'exit 1' propagates code 1" 1 \
   "$LOCK_SCRIPT" test_error_2 -- bash -c 'exit 1'
 
 echo
 echo "Test: Missing arguments"
-assert_exit_code "No arguments returns exit code 2" 2 \
+assert_exit_code "No arguments returns exit code 2 (usage)" 2 \
   "$LOCK_SCRIPT"
 
-assert_exit_code "Only lockname without separator returns exit code 2" 2 \
+assert_exit_code "Only lockname without separator returns exit code 2 (usage)" 2 \
   "$LOCK_SCRIPT" test_error_3
 
-assert_exit_code "Lockname and separator but no command returns exit code 2" 2 \
+assert_exit_code "Lockname and separator but no command returns exit code 2 (usage)" 2 \
   "$LOCK_SCRIPT" test_error_4 --
 
 assert_exit_code "Empty lockname auto-generates from command" 0 \
@@ -93,24 +93,24 @@ assert_exit_code "Empty lockname auto-generates from command" 0 \
 
 echo
 echo "Test: Invalid options"
-assert_exit_code "Unknown option returns exit code 2" 2 \
+assert_exit_code "Unknown option returns exit code 22" 22 \
   "$LOCK_SCRIPT" --unknown test_error_5 -- echo "test"
 
-assert_exit_code "Invalid short option returns exit code 2" 2 \
+assert_exit_code "Invalid short option returns exit code 22" 22 \
   "$LOCK_SCRIPT" -x test_error_6 -- echo "test"
 
 echo
 echo "Test: Invalid --max-age values"
-assert_exit_code "Non-numeric max-age returns exit code 2" 2 \
+assert_exit_code "Non-numeric max-age returns exit code 22" 22 \
   "$LOCK_SCRIPT" --max-age abc test_error_7 -- echo "test"
 
-assert_exit_code "Empty max-age returns exit code 2" 2 \
+assert_exit_code "Empty max-age returns exit code 22" 22 \
   "$LOCK_SCRIPT" --max-age "" test_error_8 -- echo "test"
 
-assert_exit_code "Negative max-age returns exit code 2" 2 \
+assert_exit_code "Negative max-age returns exit code 22" 22 \
   "$LOCK_SCRIPT" --max-age -5 test_error_9 -- echo "test"
 
-assert_exit_code "Floating point max-age returns exit code 2" 2 \
+assert_exit_code "Floating point max-age returns exit code 22" 22 \
   "$LOCK_SCRIPT" --max-age 12.5 test_error_10 -- echo "test"
 
 echo
@@ -145,7 +145,7 @@ assert_contains "Invalid max-age error is clear" "numeric" \
 
 echo
 echo "Test: Command not found"
-assert_exit_code "Non-existent command returns exit code 3" 3 \
+assert_exit_code "Non-existent command propagates exit code 127" 127 \
   "$LOCK_SCRIPT" test_error_15 -- /nonexistent/command
 
 echo
@@ -156,7 +156,7 @@ echo "#!/bin/bash" > "$TEST_SCRIPT"
 echo "echo 'test'" >> "$TEST_SCRIPT"
 chmod -x "$TEST_SCRIPT"
 
-assert_exit_code "Non-executable command returns exit code 3" 3 \
+assert_exit_code "Non-executable command propagates exit code 126" 126 \
   "$LOCK_SCRIPT" test_error_16 -- "$TEST_SCRIPT"
 
 rm -f "$TEST_SCRIPT"
@@ -182,25 +182,25 @@ rm -f "/run/lock/${LONG_NAME}.lock" "/run/lock/${LONG_NAME}.pid"
 
 echo
 echo "Test: LOCKNAME sanitization (invalid names rejected)"
-assert_exit_code "Path traversal '../evil' rejected" 2 \
+assert_exit_code "Path traversal '../evil' rejected" 22 \
   "$LOCK_SCRIPT" '../evil' -- echo "test"
 
-assert_exit_code "Slash in lockname 'foo/bar' rejected" 2 \
+assert_exit_code "Slash in lockname 'foo/bar' rejected" 22 \
   "$LOCK_SCRIPT" 'foo/bar' -- echo "test"
 
-assert_exit_code "Space in lockname 'foo bar' rejected" 2 \
+assert_exit_code "Space in lockname 'foo bar' rejected" 22 \
   "$LOCK_SCRIPT" 'foo bar' -- echo "test"
 
-assert_exit_code "At-sign in lockname 'foo@bar' rejected" 2 \
+assert_exit_code "At-sign in lockname 'foo@bar' rejected" 22 \
   "$LOCK_SCRIPT" 'foo@bar' -- echo "test"
 
-assert_exit_code "Single dot '.' rejected (creates hidden files)" 2 \
+assert_exit_code "Single dot '.' rejected (creates hidden files)" 22 \
   "$LOCK_SCRIPT" '.' -- echo "test"
 
-assert_exit_code "Double dot '..' rejected (creates hidden files)" 2 \
+assert_exit_code "Double dot '..' rejected (creates hidden files)" 22 \
   "$LOCK_SCRIPT" '..' -- echo "test"
 
-assert_exit_code "Triple dot '...' rejected (creates hidden files)" 2 \
+assert_exit_code "Triple dot '...' rejected (creates hidden files)" 22 \
   "$LOCK_SCRIPT" '...' -- echo "test"
 
 echo
@@ -240,7 +240,7 @@ assert_exit_code "Lock is acquirable after killed process cleanup" 0 \
 
 echo
 echo "Test: Empty command"
-assert_exit_code "Empty string as command fails" 3 \
+assert_exit_code "Empty string as command propagates exit code 127" 127 \
   "$LOCK_SCRIPT" test_error_20 -- ""
 
 # Summary

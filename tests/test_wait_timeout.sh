@@ -125,7 +125,7 @@ sleep 0.2
 assert_duration "--timeout 2 fails after ~2 seconds" 1 4 \
   "$LOCK_SCRIPT" --wait --timeout 2 test_wait_3 -- echo "should timeout"
 
-assert_exit_code "--timeout returns exit code 1 on timeout" 1 \
+assert_exit_code "--timeout returns exit code 24 on timeout" 24 \
   "$LOCK_SCRIPT" --wait --timeout 1 test_wait_3 -- echo "should timeout"
 
 kill -TERM "$HOLDER_PID" 2>/dev/null || true
@@ -138,10 +138,10 @@ assert_exit_code "--timeout without --wait succeeds" 0 \
 
 echo
 echo "Test: --timeout with invalid value"
-assert_exit_code "Non-numeric timeout rejected" 2 \
+assert_exit_code "Non-numeric timeout rejected" 22 \
   "$LOCK_SCRIPT" --wait --timeout abc test_wait_5 -- echo "test"
 
-assert_exit_code "Empty timeout rejected" 2 \
+assert_exit_code "Empty timeout rejected" 22 \
   "$LOCK_SCRIPT" --wait --timeout "" test_wait_6 -- echo "test"
 
 echo

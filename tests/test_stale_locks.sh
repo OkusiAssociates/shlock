@@ -132,11 +132,11 @@ set +e
 output=$("$LOCK_SCRIPT" --max-age abc test_stale_7 -- echo "test" 2>&1)
 exit_code=$?
 set -e
-if ((exit_code == 2)) && [[ "$output" =~ "numeric" ]]; then
+if ((exit_code == 22)) && [[ "$output" =~ "numeric" ]]; then
   ((++TEST_PASSED))
   echo "  ✓ Non-numeric max-age rejected"
 else
-  echo "  ✗ Non-numeric max-age should be rejected with exit code 2"
+  echo "  ✗ Non-numeric max-age should be rejected with exit code 22 (got $exit_code)"
 fi
 
 ((++TEST_COUNT))
@@ -144,11 +144,11 @@ set +e
 output=$("$LOCK_SCRIPT" --max-age -- test_stale_8 -- echo "test" 2>&1)
 exit_code=$?
 set -e
-if ((exit_code == 2)); then
+if ((exit_code == 22)); then
   ((++TEST_PASSED))
   echo "  ✓ Missing max-age value rejected"
 else
-  echo "  ✗ Missing max-age value should be rejected with exit code 2"
+  echo "  ✗ Missing max-age value should be rejected with exit code 22 (got $exit_code)"
 fi
 
 echo
