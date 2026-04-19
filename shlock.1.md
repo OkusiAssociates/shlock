@@ -1,4 +1,4 @@
-% SHLOCK(1) shlock 1.0.1
+% SHLOCK(1) shlock 1.0.4
 % Gary Dean (Biksu Okusi)
 % March 2026
 
@@ -289,17 +289,17 @@ The PID file (**<LOCK_DIR>/<LOCKNAME>.pid**) is temporary and removed by the EXI
 
 ## Stale Lock Detection Algorithm
 
-When **--max-age** threshold is exceeded:
+Before attempting to acquire the lock, **shlock** examines the existing lock file and applies one of two cleanup paths:
 
-1. Check if lock file exists and read its modification time
-2. Calculate age in seconds
-3. If age > **--max-age** (converted to seconds):
-   - Read PID from **<LOCK_DIR>/<LOCKNAME>.pid**
-   - Check if process is still running via `kill -0 <PID>`
-   - If process dead: remove both **.lock** and **.pid** files (stale lock cleaned)
-   - If process alive: exit with error code 1 (lock held by long-running process)
+1. Check if lock file exists; read modification time (mtime).
+2. Read PID from **<LOCK_DIR>/<LOCKNAME>.pid** (validated as positive integer).
+3. **Age-based path** — if age > **--max-age** (converted to seconds):
+    - If process is dead (`kill -0 <PID>` fails): remove both **.lock** and **.pid** files.
+    - If process is alive: exit with error code 1 (lock held by long-running process).
+4. **Holder-based path** — if age ≤ **--max-age** but the holder PID is no longer running:
+    - Remove both **.lock** and **.pid** files, log a warning, and proceed.
 
-This ensures locks from crashed processes don't block future executions indefinitely, while still respecting legitimately long-running processes.
+This ensures crashed processes don't block future executions (regardless of crash age), while still respecting legitimately long-running processes that exceed **--max-age**.
 
 ## Waiting Modes
 

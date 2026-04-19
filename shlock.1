@@ -14,7 +14,7 @@
 . ftr VB CB
 . ftr VBI CBI
 .\}
-.TH "SHLOCK" "1" "March 2026" "shlock 1.0.1" ""
+.TH "SHLOCK" "1" "March 2026" "shlock 1.0.4" ""
 .hy
 .SH NAME
 .PP
@@ -378,29 +378,35 @@ The PID file (\f[B]/.pid\f[R]) is temporary and removed by the EXIT trap
 when the process terminates.
 .SS Stale Lock Detection Algorithm
 .PP
-When \f[B]\[en]max-age\f[R] threshold is exceeded:
+Before attempting to acquire the lock, \f[B]shlock\f[R] examines the
+existing lock file and applies one of two cleanup paths:
 .IP "1." 3
-Check if lock file exists and read its modification time
+Check if lock file exists; read modification time (mtime).
 .IP "2." 3
-Calculate age in seconds
+Read PID from \f[B]/.pid\f[R] (validated as positive integer).
 .IP "3." 3
-If age > \f[B]\[en]max-age\f[R] (converted to seconds):
+\f[B]Age-based path\f[R] \[em] if age > \f[B]\[en]max-age\f[R]
+(converted to seconds):
 .RS 4
 .IP \[bu] 2
-Read PID from \f[B]/.pid\f[R]
+If process is dead (\f[V]kill -0 <PID>\f[R] fails): remove both
+\f[B].lock\f[R] and \f[B].pid\f[R] files.
 .IP \[bu] 2
-Check if process is still running via \f[V]kill -0 <PID>\f[R]
+If process is alive: exit with error code 1 (lock held by long-running
+process).
+.RE
+.IP "4." 3
+\f[B]Holder-based path\f[R] \[em] if age ≤ \f[B]\[en]max-age\f[R] but
+the holder PID is no longer running:
+.RS 4
 .IP \[bu] 2
-If process dead: remove both \f[B].lock\f[R] and \f[B].pid\f[R] files
-(stale lock cleaned)
-.IP \[bu] 2
-If process alive: exit with error code 1 (lock held by long-running
-process)
+Remove both \f[B].lock\f[R] and \f[B].pid\f[R] files, log a warning, and
+proceed.
 .RE
 .PP
-This ensures locks from crashed processes don\[cq]t block future
-executions indefinitely, while still respecting legitimately
-long-running processes.
+This ensures crashed processes don\[cq]t block future executions
+(regardless of crash age), while still respecting legitimately
+long-running processes that exceed \f[B]\[en]max-age\f[R].
 .SS Waiting Modes
 .PP
 Three distinct locking modes are supported:

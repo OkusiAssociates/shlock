@@ -1,8 +1,9 @@
 # bash completion for shlock                               -*- shell-script -*-
+# shellcheck shell=bash
 
 _shlock()
 {
-  local cur prev words cword split
+  local cur prev words cword
   _init_completion -s || return
 
   # Check if we've encountered the -- separator
@@ -19,7 +20,7 @@ _shlock()
     if ((cword == dashdash_pos + 1)); then
       # First word after -- - complete commands
       compopt -o bashdefault -o default
-      COMPREPLY=( $(compgen -c -- "$cur") )
+      mapfile -t COMPREPLY < <(compgen -c -- "$cur")
     else
       # Subsequent words - complete files
       _filedir
@@ -34,7 +35,7 @@ _shlock()
       if [[ -z "$cur" ]]; then
         COMPREPLY=( "hours" )
       else
-        COMPREPLY=( $(compgen -W "{1..48}" -- "$cur") )
+        mapfile -t COMPREPLY < <(compgen -W "{1..48}" -- "$cur")
       fi
       return 0
       ;;
@@ -43,7 +44,7 @@ _shlock()
       if [[ -z "$cur" ]]; then
         COMPREPLY=( "seconds" )
       else
-        COMPREPLY=( $(compgen -W "{1..3600}" -- "$cur") )
+        mapfile -t COMPREPLY < <(compgen -W "{1..3600}" -- "$cur")
       fi
       return 0
       ;;
@@ -57,7 +58,7 @@ _shlock()
   case $cur in
     -*)
       local opts="-m --max-age -w --wait -t --timeout -s --steal -h --help -V --version"
-      COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+      mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
       [[ ${COMPREPLY-} == *= ]] && compopt -o nospace
       return 0
       ;;
@@ -96,7 +97,7 @@ _shlock()
 
     # If there's partial input, filter; otherwise show all
     if [[ -n "$cur" ]]; then
-      COMPREPLY=( $(compgen -W "${locks[*]}" -- "$cur") )
+      mapfile -t COMPREPLY < <(compgen -W "${locks[*]}" -- "$cur")
     else
       # Show hint that this is for lockname
       COMPREPLY=( "${locks[@]}" )

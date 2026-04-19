@@ -376,14 +376,13 @@ fi
    - Falls back to `/var/lock` if `/run/lock` unavailable
    - Falls back to `/tmp/locks` (created if needed)
    - Fails if no directory is writable
-3. **Lock File Creation**: Creates a lock file at `<LOCK_DIR>/<LOCKNAME>.lock`
-4. **Stale Lock Check**: If lock file exists, checks if it's older than `--max-age` hours
-5. **Process Validation**: Verifies if the process that created the lock is still running
-6. **Lock Stealing** (optional): If `--steal` is specified, removes existing lock (auto-cleans dead process locks, prompts for running processes)
-7. **Lock Acquisition**: Uses `flock(1)` for atomic, kernel-level locking
-8. **PID Tracking**: Writes the script's PID to `<LOCK_DIR>/<LOCKNAME>.pid`
-9. **Command Execution**: Runs the specified command while holding the lock
-10. **Cleanup**: Automatically removes PID file on exit; lock file persists for reuse
+3. **Lock File Path**: Constructs path `<LOCK_DIR>/<LOCKNAME>.lock`
+4. **Stale Lock Check**: If the lock file exists, cleans it up when either (a) older than `--max-age` with dead holder, or (b) within `--max-age` but holder process is dead. Refuses if an over-age lock is held by a running process (see [Stale Lock Detection](#stale-lock-detection))
+5. **Lock Stealing** (optional): If `--steal` is specified, removes existing lock (auto-cleans dead-process locks, prompts for running processes)
+6. **Lock Acquisition**: Uses `flock(1)` for atomic, kernel-level locking
+7. **PID Tracking**: Writes the script's PID to `<LOCK_DIR>/<LOCKNAME>.pid`
+8. **Command Execution**: Runs the specified command while holding the lock
+9. **Cleanup**: Automatically removes PID file on exit; lock file persists for reuse
 
 ### File Locations
 
@@ -399,11 +398,15 @@ File patterns:
 
 ### Stale Lock Detection
 
-A lock is considered stale when:
-1. The lock file is older than `--max-age` hours (default: 24)
-2. AND the process listed in the PID file is not running
+Before attempting to acquire the lock, shlock examines the existing lock file and applies one of two cleanup paths:
 
-If a lock is stale but the process is still running, the lock acquisition fails with a warning that the process has been running for an unusually long time.
+1. **Age-based (`--max-age` exceeded)** — If the lock file mtime is older than `--max-age` hours (default: 24):
+   - If the PID in the PID file is **dead** → lock is removed (stale, cleaned).
+   - If the PID is **still running** → lock acquisition fails with error code 1 (long-running process, not stale).
+
+2. **Holder-based (within `--max-age`)** — If the lock file is younger than `--max-age` but the PID file holder is no longer running, the lock is reclaimed automatically with a warning. This covers crashes where the process died before releasing the lock.
+
+Both paths leave an existing running holder's lock untouched.
 
 ### Waiting Modes
 
@@ -752,6 +755,6 @@ This utility is part of the Okusi Group bash scripting standard library.
 
 ---
 
-**Version**: 1.0.1
-**Last Updated**: 2026-03-06
+**Version**: 1.0.4
+**Last Updated**: 2026-04-19
 **Maintainer**: Gary Dean (Biksu Okusi)
