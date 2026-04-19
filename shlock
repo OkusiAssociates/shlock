@@ -111,37 +111,41 @@ yn() {
 
 show_help() {
   cat <<HELP
+$SCRIPT_NAME $VERSION - file-based locking system with stale lock detection
+
 Usage: $SCRIPT_NAME [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
 
-File-based locking system with stale lock detection.
+Runs COMMAND while holding an exclusive flock-based lock. Prevents multiple
+instances of the same operation from running concurrently, with automatic
+stale-lock cleanup for crashed holders.
 
 Arguments:
-  LOCKNAME             Unique lock identifier (optional)
-                       If omitted, derived from basename of COMMAND
-  --                   -- is *required* to signal the start of COMMAND
+  LOCKNAME                 Unique lock identifier (optional)
+                           If omitted, derived from basename of COMMAND
+  --                       Required separator between options and COMMAND
 
 Options:
   -m, --max-age HOURS      Maximum lock age in hours (default: $MAX_AGE_HOURS)
   -w, --wait               Wait indefinitely for lock to become available
   -t, --timeout SECONDS    Maximum time to wait for lock
-  -s, --steal              Forcefully remove existing lock (prompts only if process running)
+  -s, --steal              Forcefully remove existing lock (prompts if holder running)
   -h, --help               Display this help message
   -V, --version            Display version information
 
 Exit codes (BCS-canonical):
-  0   - Command executed successfully (wrapped command exit code passed through)
-  1   - Lock held (non-timeout acquisition failure) or steal cancelled by user
-  2   - Usage error (missing COMMAND or -- separator)
-  13  - Permission denied (no writable lock directory)
-  22  - Invalid argument (unknown option, bad LOCKNAME, non-numeric value)
-  24  - Timeout (--timeout N expired)
-  *   - Any other code: propagated from the wrapped command
+  0                        Command executed successfully (wrapped exit passed through)
+  1                        Lock held (non-timeout) or steal cancelled by user
+  2                        Usage error (missing COMMAND or -- separator)
+  13                       Permission denied (no writable lock directory)
+  22                       Invalid argument (unknown option, bad LOCKNAME, non-numeric)
+  24                       Timeout (--timeout N expired)
+  *                        Any other code: propagated from the wrapped command
 
 Examples:
   # Non-blocking (default)
   $SCRIPT_NAME backup -- /usr/local/bin/backup.sh
 
-  # Auto-generate lock name from command
+  # Auto-generate lock name from command basename
   $SCRIPT_NAME -- /usr/local/bin/backup.sh
 
   # Wait indefinitely for lock
@@ -150,10 +154,10 @@ Examples:
   # Wait up to 30 seconds
   $SCRIPT_NAME --timeout 30 sync -- rsync -av /src /dest
 
-  # Custom stale lock threshold
+  # Custom stale-lock threshold
   $SCRIPT_NAME --max-age 12 critical -- /path/to/critical.sh
 
-  # Using short options
+  # Short-option bundling
   $SCRIPT_NAME -t 60 -m 6 backup -- /usr/local/bin/backup.sh
 
   # Forcefully steal a held lock (prompts only if holder is running)
