@@ -4,7 +4,7 @@
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man/man1
-COMPDIR ?= /etc/bash_completion.d
+COMPDIR ?= $(PREFIX)/share/bash-completion/completions
 DESTDIR ?=
 
 .PHONY: all install uninstall check build clean help
@@ -21,9 +21,8 @@ install: build
 	install -m 755 shlock $(DESTDIR)$(BINDIR)/shlock
 	install -d $(DESTDIR)$(MANDIR)
 	install -m 644 shlock.1 $(DESTDIR)$(MANDIR)/shlock.1
-	@if [ -d $(DESTDIR)$(COMPDIR) ]; then \
-	  install -m 644 shlock.bash_completion $(DESTDIR)$(COMPDIR)/shlock; \
-	fi
+	install -d $(DESTDIR)$(COMPDIR)
+	install -m 644 shlock.bash_completion $(DESTDIR)$(COMPDIR)/shlock
 	@if [ -z "$(DESTDIR)" ]; then $(MAKE) --no-print-directory check; fi
 
 uninstall:
