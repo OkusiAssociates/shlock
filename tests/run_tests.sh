@@ -6,10 +6,6 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-# Script metadata
-SCRIPT_NAME=${0##*/}
-readonly -- SCRIPT_NAME
-
 # Directories
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly -- SCRIPT_DIR

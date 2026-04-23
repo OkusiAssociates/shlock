@@ -1,5 +1,8 @@
 #!/bin/bash
-#shellcheck disable=SC2317  # Unreachable code warnings for show_usage()
+#bcscheck disable=BCS0701 # intentional: minimal messaging; no _msg infrastructure
+#bcscheck disable=BCS0702 # intentional: status to stdout acceptable for installer
+#bcscheck disable=BCS0703 # intentional: only error()/die() needed
+#bcscheck disable=BCS0705 # intentional: no colour helpers
 #
 # install.sh - Installation script for shlock
 #
@@ -39,18 +42,20 @@
 #   ./install.sh uninstall
 #   ./install.sh clean
 #
-# EXIT CODES:
-#   0 - Success
-#   1 - Dependency missing or operation failed
-#   2 - Invalid arguments
+# EXIT CODES (BCS-canonical):
+#   0  - Success
+#   1  - Installation/uninstall cancelled by user (ERR_GENERAL)
+#   3  - File/directory not found (ERR_NOENT)
+#   18 - Required dependency missing (ERR_NODEP)
+#   22 - Invalid argument or unknown action/option (ERR_INVAL)
 #
 set -euo pipefail
 shopt -s inherit_errexit
 
-declare -rx PATH=/usr/local/bin:/usr/bin:/bin
-
 declare -r SCRIPT_NAME=${0##*/}
-declare -r VERSION='1.0.0'
+declare -r VERSION='1.0.1'
+
+declare -rx PATH=/usr/local/bin:/usr/bin:/bin
 
 # Default values
 declare -- PREFIX='/usr/local'
@@ -114,23 +119,25 @@ PATH AND MANPATH CONFIGURATION:
   Or create /etc/man_db.conf.d/local.conf:
   MANPATH_MAP /usr/local/bin /usr/local/share/man
 
-EXIT CODES:
-  0 - Success
-  1 - Dependency missing or operation failed
-  2 - Invalid arguments
+EXIT CODES (BCS-canonical):
+  0  - Success
+  1  - Installation/uninstall cancelled by user
+  3  - File/directory not found
+  18 - Required dependency missing
+  22 - Invalid argument or unknown action/option
 EOF
 }
 
 # Check if pandoc is installed
 check_pandoc() {
-  if ! command -v pandoc >/dev/null 2>&1; then
+  if ! command -v pandoc &>/dev/null; then
     error 'pandoc is not installed'
     error ''
     error 'Install with:'
     error '  Debian/Ubuntu: sudo apt install pandoc'
     error '  Fedora/RHEL:   sudo dnf install pandoc'
     error '  macOS:         brew install pandoc'
-    die 1
+    die 18
   fi
 }
 
@@ -144,10 +151,17 @@ confirm() {
   [[ "$response" =~ ^[Yy]$ ]]
 }
 
+# Validate that option "$1" has a non-flag argument "$2"; die 22 on missing.
+# Treats a following token that begins with `-` as "missing" to catch
+# `--prefix --yes` where `--yes` was meant as a separate flag, not a value.
+noarg() {
+  (($# > 1)) && [[ $2 != -* ]] || die 22 "Option ${1@Q} requires an argument"
+}
+
 # Build the manpage
 build_manpage() {
   echo "Building manpage: $TARGET"
-  [[ -f "$SOURCE" ]] || die 1 "Source file $SOURCE not found"
+  [[ -f "$SOURCE" ]] || die 3 "Source file $SOURCE not found"
   check_pandoc
   pandoc --standalone --to man -o "$TARGET" "$SOURCE" || \
     die 1 'Failed to build manpage'
@@ -157,7 +171,7 @@ build_manpage() {
 # Install the script
 install_script() {
   local -- bindir="$PREFIX/bin"
-  [[ -f "$SCRIPT" ]] || die 1 "Script file $SCRIPT not found"
+  [[ -f "$SCRIPT" ]] || die 3 "Script file $SCRIPT not found"
   echo "Installing script to $bindir/$SCRIPT"
   mkdir -p "$bindir" || die 1 "Failed to create directory $bindir"
   install -m 755 "$SCRIPT" "$bindir/$SCRIPT" || \
@@ -181,7 +195,7 @@ install_manpage() {
 # Install the bash completion
 install_completion() {
   local -- completiondir="$PREFIX/share/bash-completion/completions"
-  [[ -f "$COMPLETION_SRC" ]] || die 1 "Completion file $COMPLETION_SRC not found"
+  [[ -f "$COMPLETION_SRC" ]] || die 3 "Completion file $COMPLETION_SRC not found"
   echo "Installing bash completion to $completiondir/$COMPLETION_DEST"
   mkdir -p "$completiondir" || die 1 "Failed to create directory $completiondir"
   install -m 644 "$COMPLETION_SRC" "$completiondir/$COMPLETION_DEST" || \
@@ -225,7 +239,7 @@ install_all() {
 uninstall_script() {
   local -- bindir="$PREFIX/bin"
   local -- script_path="$bindir/$SCRIPT"
-  [[ -f "$script_path" ]] || die 1 "Script not found at $script_path"
+  [[ -f "$script_path" ]] || die 3 "Script not found at $script_path"
   echo "Removing script from $script_path"
   rm -f "$script_path" || die 1 'Failed to remove script (try with sudo?)'
   echo '✓ Script removed'
@@ -235,7 +249,7 @@ uninstall_script() {
 uninstall_manpage() {
   local -- mandir="$PREFIX/share/man/man1"
   local -- target_path="$mandir/$TARGET"
-  [[ -f "$target_path" ]] || die 1 "Manpage not found at $target_path"
+  [[ -f "$target_path" ]] || die 3 "Manpage not found at $target_path"
   echo "Removing manpage from $target_path"
   rm -f "$target_path" || die 1 'Failed to remove manpage (try with sudo?)'
   echo 'Updating man database...'
@@ -247,7 +261,7 @@ uninstall_manpage() {
 uninstall_completion() {
   local -- completiondir="$PREFIX/share/bash-completion/completions"
   local -- completion_path="$completiondir/$COMPLETION_DEST"
-  [[ -f "$completion_path" ]] || die 1 "Completion not found at $completion_path"
+  [[ -f "$completion_path" ]] || die 3 "Completion not found at $completion_path"
   echo "Removing bash completion from $completion_path"
   rm -f "$completion_path" || die 1 'Failed to remove completion (try with sudo?)'
   echo '✓ Bash completion removed'
@@ -292,9 +306,8 @@ clean_files() {
 main() {
   while (($#)); do
     case $1 in
-      --prefix)
-        shift
-        [[ -n "${1:-}" ]] || die 2 '--prefix requires a directory argument'
+      -P|--prefix)
+        noarg "$@"; shift
         PREFIX=$1
         ;;
       -y|--yes)
@@ -316,10 +329,10 @@ main() {
         break
         ;;
       -*)
-        die 2 "Unknown option: ${1@Q}"
+        die 22 "Unknown option: ${1@Q}"
         ;;
       *)
-        die 2 "Unknown action: ${1@Q}"
+        die 22 "Unknown action: ${1@Q}"
         ;;
     esac
     shift
@@ -327,7 +340,7 @@ main() {
 
   # Expand PREFIX to absolute path
   PREFIX=$(cd "$PREFIX" 2>/dev/null && pwd) || {
-    PREFIX=$(realpath -m "$PREFIX" 2>/dev/null) || die 2 "Invalid prefix: ${PREFIX@Q}"
+    PREFIX=$(realpath -m "$PREFIX" 2>/dev/null) || die 22 "Invalid prefix: ${PREFIX@Q}"
   }
 
   readonly -- PREFIX SKIP_CONFIRM ACTION
@@ -379,7 +392,7 @@ main() {
       clean_files
       ;;
     *)
-      die 2 "Unknown action: ${ACTION@Q}"
+      die 22 "Unknown action: ${ACTION@Q}"
       ;;
   esac
 }

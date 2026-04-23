@@ -1,4 +1,4 @@
-% SHLOCK(1) shlock 2.0.0
+% SHLOCK(1) shlock 2.0.1
 % Gary Dean (Biksu Okusi)
 % April 2026
 
@@ -82,6 +82,9 @@ Exit codes follow the Bash Coding Standard (BCS) canonical table. **v2.0.0 is a 
 
 **2**
 :   Usage error (missing *COMMAND* or `--` separator).
+
+**5**
+:   I/O error: failed to write PID file after acquiring the lock. The lock is released on exit (fd 200 closes); any partial state is cleaned up by the EXIT trap.
 
 **13**
 :   Permission denied (no writable lock directory in `/run/lock`, `/var/lock`, or `/tmp/locks`).
@@ -245,6 +248,7 @@ if ! shlock myapp -- /path/to/command; then
   case $? in
     1)  echo "Already running, skipping..." >&2; exit 0 ;;
     2)  echo "Usage error" >&2; exit 2 ;;
+    5)  echo "I/O error writing PID file" >&2; exit 5 ;;
     13) echo "No writable lock directory" >&2; exit 13 ;;
     22) echo "Invalid argument" >&2; exit 22 ;;
     24) echo "Timeout waiting for lock" >&2; exit 24 ;;

@@ -14,7 +14,7 @@
 . ftr VB CB
 . ftr VBI CBI
 .\}
-.TH "SHLOCK" "1" "April 2026" "shlock 2.0.0" ""
+.TH "SHLOCK" "1" "April 2026" "shlock 2.0.1" ""
 .hy
 .SH NAME
 .PP
@@ -125,6 +125,11 @@ Lock held (non-timeout acquisition failure) or steal cancelled by user.
 .TP
 \f[B]2\f[R]
 Usage error (missing \f[I]COMMAND\f[R] or \f[V]--\f[R] separator).
+.TP
+\f[B]5\f[R]
+I/O error: failed to write PID file after acquiring the lock.
+The lock is released on exit (fd 200 closes); any partial state is
+cleaned up by the EXIT trap.
 .TP
 \f[B]13\f[R]
 Permission denied (no writable lock directory in \f[V]/run/lock\f[R],
@@ -319,6 +324,7 @@ if ! shlock myapp -- /path/to/command; then
   case $? in
     1)  echo \[dq]Already running, skipping...\[dq] >&2; exit 0 ;;
     2)  echo \[dq]Usage error\[dq] >&2; exit 2 ;;
+    5)  echo \[dq]I/O error writing PID file\[dq] >&2; exit 5 ;;
     13) echo \[dq]No writable lock directory\[dq] >&2; exit 13 ;;
     22) echo \[dq]Invalid argument\[dq] >&2; exit 22 ;;
     24) echo \[dq]Timeout waiting for lock\[dq] >&2; exit 24 ;;

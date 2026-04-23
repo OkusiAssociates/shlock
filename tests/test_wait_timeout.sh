@@ -65,12 +65,13 @@ assert_duration() {
 
   ((++TEST_COUNT))
 
-  local -i start_time=$(date +%s)
+  local -i start_time end_time duration
+  start_time=$(date +%s)
   set +e
   "$@" >/dev/null 2>&1
   set -e
-  local -i end_time=$(date +%s)
-  local -i duration=$((end_time - start_time))
+  end_time=$(date +%s)
+  duration=$((end_time - start_time))
 
   if ((duration >= min_seconds && duration <= max_seconds)); then
     ((++TEST_PASSED))

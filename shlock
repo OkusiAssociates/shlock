@@ -39,6 +39,7 @@
 #   0   - Command executed successfully (wrapped command exit code passed through)
 #   1   - Lock held (non-timeout acquisition failure) or steal cancelled by user
 #   2   - Usage error (missing COMMAND or -- separator)
+#   5   - I/O error (failed to write PID file after acquiring lock)
 #   13  - Permission denied (no writable lock directory)
 #   22  - Invalid argument (unknown option, bad LOCKNAME, non-numeric value)
 #   24  - Timeout (--timeout N expired)
@@ -80,7 +81,7 @@ umask 0022
 declare -rx PATH=${HOME:-/root}/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # Script metadata
-declare -r VERSION=2.0.0
+declare -r VERSION=2.0.1
 declare -r SCRIPT_NAME=${0##*/}
 
 # Global variables
@@ -93,7 +94,7 @@ declare -i TIMEOUT_SECONDS=0
 declare -i TIMEOUT_SET=0
 declare -i STEAL_MODE=0
 
-# Messaging functions -----------------
+# Messaging functions
 
 warn() { >&2 echo "$SCRIPT_NAME: ▲ $*"; }
 error() { >&2 echo "$SCRIPT_NAME: ✗ $*"; }
@@ -136,6 +137,7 @@ Exit codes (BCS-canonical):
   0                        Command executed successfully (wrapped exit passed through)
   1                        Lock held (non-timeout) or steal cancelled by user
   2                        Usage error (missing COMMAND or -- separator)
+  5                        I/O error (failed to write PID file)
   13                       Permission denied (no writable lock directory)
   22                       Invalid argument (unknown option, bad LOCKNAME, non-numeric)
   24                       Timeout (--timeout N expired)
@@ -165,7 +167,7 @@ Examples:
 HELP
 }
 
-# Helper functions --------------------
+# Helper functions
 
 # Validate that $2 exists and is numeric, die with error if not
 arg2_num() {
@@ -280,10 +282,10 @@ steal_lock() {
 
   # Remove lock and pid files
   rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
-    || warn "Failed to remove lock files during steal"
+    || warn 'Failed to remove lock files during steal'
 }
 
-# Main entry --------------------------
+# Main entry
 
 main() {
   while (($#)); do
@@ -365,7 +367,7 @@ main() {
       # Lock within max-age but holder process is dead: reclaim
       warn "removing abandoned lock (holder PID $old_pid no longer running)"
       rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
-        || warn "Failed to reclaim abandoned lock"
+        || warn 'Failed to reclaim abandoned lock'
     fi
   fi
 
@@ -374,8 +376,8 @@ main() {
   fi
 
   # Try to acquire lock using flock
-  # Open file descriptor 200 for the lock file
   exec 200>"$LOCKFILE"
+  trap cleanup EXIT
 
   # Determine flock options (timeout takes priority over wait mode)
   local -a flock_opts=()
@@ -386,7 +388,6 @@ main() {
     # Wait indefinitely (no options needed for flock)
     :
   else
-    # Non-blocking mode (default)
     flock_opts=(-n)
   fi
 
@@ -405,9 +406,7 @@ main() {
     fi
   fi
 
-  echo $$ > "$PIDFILE"
-
-  trap cleanup EXIT
+  echo $$ > "$PIDFILE" || die 5 "Failed to write PID file ${PIDFILE@Q}"
 
   local -i exit_code=0
   "$@" || exit_code=$?
