@@ -4,7 +4,15 @@
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man/man1
-COMPDIR ?= $(PREFIX)/share/bash-completion/completions
+# Completion dir: /etc/bash_completion.d for system prefixes (matches host
+# convention for locally-installed tools; eager-loaded at shell startup);
+# $(PREFIX)/share/bash-completion/completions otherwise (XDG, user installs,
+# lazy-loaded by bash-completion's dynamic loader). Override with COMPDIR=...
+ifneq (,$(filter $(PREFIX),/usr /usr/local))
+  COMPDIR ?= /etc/bash_completion.d
+else
+  COMPDIR ?= $(PREFIX)/share/bash-completion/completions
+endif
 DESTDIR ?=
 
 .PHONY: all install uninstall check build clean help

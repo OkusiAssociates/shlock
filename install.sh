@@ -53,7 +53,7 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 declare -r SCRIPT_NAME=${0##*/}
-declare -r VERSION='1.0.1'
+declare -r VERSION='1.0.2'
 
 declare -rx PATH=/usr/local/bin:/usr/bin:/bin
 
@@ -194,7 +194,7 @@ install_manpage() {
 
 # Install the bash completion
 install_completion() {
-  local -- completiondir="$PREFIX/share/bash-completion/completions"
+  local -- completiondir="$COMPDIR"
   [[ -f "$COMPLETION_SRC" ]] || die 3 "Completion file $COMPLETION_SRC not found"
   echo "Installing bash completion to $completiondir/$COMPLETION_DEST"
   mkdir -p "$completiondir" || die 1 "Failed to create directory $completiondir"
@@ -207,7 +207,7 @@ install_completion() {
 install_all() {
   local -- bindir="$PREFIX/bin"
   local -- mandir="$PREFIX/share/man/man1"
-  local -- completiondir="$PREFIX/share/bash-completion/completions"
+  local -- completiondir="$COMPDIR"
 
   confirm "Install shlock to $bindir/, manpage to $mandir/, and completion to $completiondir/?" || \
     die 1 'Installation cancelled'
@@ -259,7 +259,7 @@ uninstall_manpage() {
 
 # Uninstall the bash completion
 uninstall_completion() {
-  local -- completiondir="$PREFIX/share/bash-completion/completions"
+  local -- completiondir="$COMPDIR"
   local -- completion_path="$completiondir/$COMPLETION_DEST"
   [[ -f "$completion_path" ]] || die 3 "Completion not found at $completion_path"
   echo "Removing bash completion from $completion_path"
@@ -271,7 +271,7 @@ uninstall_completion() {
 uninstall_all() {
   local -- bindir="$PREFIX/bin"
   local -- mandir="$PREFIX/share/man/man1"
-  local -- completiondir="$PREFIX/share/bash-completion/completions"
+  local -- completiondir="$COMPDIR"
   local -- script_path="$bindir/$SCRIPT"
   local -- man_path="$mandir/$TARGET"
   local -- completion_path="$completiondir/$COMPLETION_DEST"
@@ -345,6 +345,19 @@ main() {
 
   readonly -- PREFIX SKIP_CONFIRM ACTION
 
+  # Completion dir: /etc/bash_completion.d for system prefixes
+  # (matches host convention for locally-installed tools; eager-loaded at
+  # shell startup); $PREFIX/share/bash-completion/completions otherwise
+  # (XDG, user installs, lazy-loaded). Override via COMPDIR env var.
+  if [[ -z ${COMPDIR:-} ]]; then
+    if [[ $PREFIX == /usr || $PREFIX == /usr/local ]]; then
+      COMPDIR=/etc/bash_completion.d
+    else
+      COMPDIR="$PREFIX/share/bash-completion/completions"
+    fi
+  fi
+  readonly -- COMPDIR
+
   # Execute action
   case $ACTION in
     build)
@@ -367,10 +380,10 @@ main() {
       echo 'View with: man shlock'
       ;;
     install-completion)
-      confirm "Install bash completion to $PREFIX/share/bash-completion/completions/?" || die 1 'Installation cancelled'
+      confirm "Install bash completion to $COMPDIR/?" || die 1 'Installation cancelled'
       install_completion
       echo
-      echo "Bash completion installed: $PREFIX/share/bash-completion/completions/$COMPLETION_DEST"
+      echo "Bash completion installed: $COMPDIR/$COMPLETION_DEST"
       echo 'Restart your shell to enable completion'
       ;;
     uninstall)
@@ -385,7 +398,7 @@ main() {
       uninstall_manpage
       ;;
     uninstall-completion)
-      confirm "Remove bash completion from $PREFIX/share/bash-completion/completions/?" || die 1 'Uninstall cancelled'
+      confirm "Remove bash completion from $COMPDIR/?" || die 1 'Uninstall cancelled'
       uninstall_completion
       ;;
     clean)
