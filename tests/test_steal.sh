@@ -1,5 +1,6 @@
 #!/bin/bash
 #shellcheck disable=SC2317  # Unreachable code warnings for cleanup() and helpers - called via trap
+#shellcheck disable=SC2324  # var+=1 is correct on declare -i globals per BCS0505
 # Lock stealing tests for shlock
 
 set -euo pipefail
@@ -26,9 +27,9 @@ trap cleanup EXIT
 assert_success() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -41,16 +42,16 @@ assert_exit_code() {
   local -- msg=$1
   local -i expected=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i actual=0
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" &>/dev/null
   actual=$?
   set -e
 
   if ((actual == expected)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (exit code: $actual)"
     return 0
   else
@@ -63,7 +64,7 @@ assert_contains() {
   local -- msg=$1
   local -- pattern=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -- output
   set +e
@@ -71,7 +72,7 @@ assert_contains() {
   set -e
 
   if [[ "$output" =~ $pattern ]]; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -103,22 +104,24 @@ assert_contains "Dead process lock removed with 'abandoned' message" "abandoned"
 echo
 echo "Test: Steal dead lock executes command"
 create_fake_lock test_steal_3 99999
-((++TEST_COUNT))
+declare -- OUTPUT
+declare -i EXIT_CODE=0
+TEST_COUNT+=1
 set +e
-output=$("$LOCK_SCRIPT" --steal test_steal_3 -- echo "stolen-ok" 2>&1)
-exit_code=$?
+OUTPUT=$("$LOCK_SCRIPT" --steal test_steal_3 -- echo "stolen-ok" 2>&1)
+EXIT_CODE=$?
 set -e
-if ((exit_code == 0)) && [[ "$output" =~ stolen-ok ]]; then
-  ((++TEST_PASSED))
+if ((EXIT_CODE == 0)) && [[ "$OUTPUT" =~ stolen-ok ]]; then
+  TEST_PASSED+=1
   echo "  ✓ Steal dead lock executes command and outputs result"
 else
-  echo "  ✗ Steal dead lock executes command (exit=$exit_code, output=$output)"
+  echo "  ✗ Steal dead lock executes command (exit=$EXIT_CODE, output=$OUTPUT)"
 fi
 
 echo
 echo "Test: Steal running process - user declines"
 "$LOCK_SCRIPT" test_steal_4 -- sleep 5 &
-HOLDER_PID=$!
+declare -i HOLDER_PID=$!
 sleep 0.3
 assert_exit_code "Steal declined returns exit code 1" 1 \
   bash -c 'echo "n" | "$1" --steal test_steal_4 -- echo "test"' _ "$LOCK_SCRIPT"
@@ -128,7 +131,7 @@ wait "$HOLDER_PID" 2>/dev/null || true
 echo
 echo "Test: Steal running process - user confirms"
 "$LOCK_SCRIPT" test_steal_5 -- sleep 5 &
-HOLDER_PID=$!
+declare -i HOLDER_PID=$!
 sleep 0.3
 assert_exit_code "Steal confirmed returns exit code 0" 0 \
   bash -c 'echo "y" | "$1" --steal test_steal_5 -- echo "test"' _ "$LOCK_SCRIPT"
@@ -139,16 +142,17 @@ echo
 echo "Test: After steal, PID file recreated"
 create_fake_lock test_steal_6 99999
 "$LOCK_SCRIPT" --steal test_steal_6 -- sleep 0.2 &
-LOCK_PID=$!
+declare -i LOCK_PID=$!
 sleep 0.1
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ -f /run/lock/test_steal_6.pid ]]; then
-  pid_content=$(< /run/lock/test_steal_6.pid)
-  if [[ "$pid_content" =~ ^[0-9]+$ ]]; then
-    ((++TEST_PASSED))
+  declare -- PID_CONTENT
+  PID_CONTENT=$(<"/run/lock/test_steal_6.pid")
+  if [[ "$PID_CONTENT" =~ ^[0-9]+$ ]]; then
+    TEST_PASSED+=1
     echo "  ✓ PID file recreated with valid numeric PID"
   else
-    echo "  ✗ PID file contains invalid data: $pid_content"
+    echo "  ✗ PID file contains invalid data: $PID_CONTENT"
   fi
 else
   echo "  ✗ PID file not found after steal"
@@ -172,6 +176,29 @@ echo "Test: Steal with auto-generated lockname"
 create_fake_lock echo 99999
 assert_exit_code "Steal with auto-generated lockname succeeds" 0 \
   "$LOCK_SCRIPT" --steal -- echo "test"
+
+echo
+echo "Test: Steal with malformed PID file — empty pidfile"
+# read_holder_pid() returns 'unknown' for empty pidfile — steal must proceed
+# without prompting (unknown holder is treated as dead).
+touch /run/lock/test_steal_9.lock
+: > /run/lock/test_steal_9.pid     # Empty (not stat-s, zero bytes)
+assert_exit_code "Empty pidfile + --steal proceeds (exit 0)" 0 \
+  "$LOCK_SCRIPT" --steal test_steal_9 -- echo "test"
+
+echo
+echo "Test: Steal with malformed PID file — non-numeric garbage"
+touch /run/lock/test_steal_10.lock
+echo "notapid" > /run/lock/test_steal_10.pid
+assert_exit_code "Garbage pidfile + --steal proceeds (exit 0)" 0 \
+  "$LOCK_SCRIPT" --steal test_steal_10 -- echo "test"
+
+echo
+echo "Test: Steal with missing PID file but lockfile present"
+touch /run/lock/test_steal_11.lock
+rm -f /run/lock/test_steal_11.pid    # Ensure pidfile missing
+assert_exit_code "Missing pidfile + --steal proceeds (exit 0)" 0 \
+  "$LOCK_SCRIPT" --steal test_steal_11 -- echo "test"
 
 # Summary
 echo

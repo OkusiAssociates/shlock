@@ -27,9 +27,9 @@ trap cleanup EXIT
 assert_success() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -41,12 +41,12 @@ assert_success() {
 assert_failure() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
     echo "  ✗ $msg (expected failure, got success)"
     return 1
   else
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   fi
@@ -56,7 +56,7 @@ assert_exit_code() {
   local -- msg=$1
   local -i expected=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i actual=0
   set +e
@@ -65,7 +65,7 @@ assert_exit_code() {
   set -e
 
   if ((actual == expected)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (exit code: $actual)"
     return 0
   else
@@ -87,7 +87,7 @@ assert_success "Execute command with multiple arguments" \
 echo
 echo "Test: Lock file creation"
 "$LOCK_SCRIPT" test_basic_3 -- sleep 0.1 &
-LOCK_PID=$!
+declare -i LOCK_PID=$!
 sleep 0.05
 assert_success "Lock file exists while command runs" \
   test -f /run/lock/test_basic_3.lock
@@ -153,10 +153,11 @@ echo "Test: PID file contents"
 LOCK_PID=$!
 sleep 0.1
 if [[ -f /run/lock/test_basic_10.pid ]]; then
-  PID_CONTENT=$(cat /run/lock/test_basic_10.pid)
-  ((++TEST_COUNT))
+  declare -- PID_CONTENT
+  PID_CONTENT=$(<"/run/lock/test_basic_10.pid")
+  TEST_COUNT+=1
   if [[ "$PID_CONTENT" =~ ^[0-9]+$ ]]; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ PID file contains valid PID"
   else
     echo "  ✗ PID file contains invalid data: $PID_CONTENT"

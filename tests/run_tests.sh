@@ -44,15 +44,15 @@ run_test_file() {
   info "Running: $test_name"
 
   if bash "$test_file"; then
-    ((++TESTS_PASSED))
+    TESTS_PASSED+=1
     success "$test_name passed"
   else
-    ((++TESTS_FAILED))
+    TESTS_FAILED+=1
     FAILED_TESTS+=("$test_name")
     error "$test_name failed"
   fi
 
-  ((++TESTS_RUN))
+  TESTS_RUN+=1
 }
 
 # Main

@@ -29,16 +29,16 @@ assert_exit_code() {
   local -- msg=$1
   local -i expected=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i actual=0
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" &>/dev/null
   actual=$?
   set -e
 
   if ((actual == expected)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (exit code: $actual)"
     return 0
   else
@@ -51,7 +51,7 @@ assert_contains() {
   local -- msg=$1
   local -- pattern=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -- output
   set +e
@@ -59,7 +59,7 @@ assert_contains() {
   set -e
 
   if [[ "$output" =~ $pattern ]]; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -117,7 +117,7 @@ echo
 echo "Test: Lock already held"
 # Start a process holding the lock
 "$LOCK_SCRIPT" test_error_11 -- sleep 1 &
-HOLDER_PID=$!
+declare -i HOLDER_PID=$!
 sleep 0.1
 
 assert_exit_code "Attempting to acquire held lock returns exit code 1" 1 \
@@ -151,7 +151,7 @@ assert_exit_code "Non-existent command propagates exit code 127" 127 \
 echo
 echo "Test: Command with insufficient permissions"
 # Create a non-executable file
-TEST_SCRIPT="/tmp/test_noexec_$$"
+declare -- TEST_SCRIPT="/tmp/test_noexec_$$"
 echo "#!/bin/bash" > "$TEST_SCRIPT"
 echo "echo 'test'" >> "$TEST_SCRIPT"
 chmod -x "$TEST_SCRIPT"
@@ -175,6 +175,7 @@ assert_exit_code "Lock name with dots works" 0 \
 
 echo
 echo "Test: Very long lock name"
+declare -- LONG_NAME
 LONG_NAME="test_error_$(printf 'a%.0s' {1..200})"
 assert_exit_code "Very long lock name works" 0 \
   "$LOCK_SCRIPT" "$LONG_NAME" -- echo "test"
@@ -223,7 +224,7 @@ echo
 echo "Test: Signal handling during lock hold"
 # Start a process with lock
 "$LOCK_SCRIPT" test_error_19 -- sleep 10 &
-VICTIM_PID=$!
+declare -i VICTIM_PID=$!
 sleep 0.3
 
 # Send SIGTERM and wait for it to die
@@ -242,6 +243,27 @@ echo
 echo "Test: Empty command"
 assert_exit_code "Empty string as command propagates exit code 127" 127 \
   "$LOCK_SCRIPT" test_error_20 -- ""
+
+echo
+echo "Test: Permission denied when no writable lock dir (bwrap sandbox)"
+# Use bwrap to shadow /run/lock and /tmp with read-only binds so
+# determine_lock_dir() exhausts all three fallbacks.
+# /var/lock is a symlink to /run/lock on systemd hosts — shadowed transitively.
+if command -v bwrap &>/dev/null; then
+  assert_exit_code "No writable lock dir returns exit code 13" 13 \
+    bwrap --bind / / --dev /dev \
+      --ro-bind /usr/lib /run/lock \
+      --ro-bind /usr/lib /tmp \
+      -- "$LOCK_SCRIPT" test_error_21 -- echo test
+
+  assert_contains "Permission denied error mentions lock directory" "lock directory" \
+    bwrap --bind / / --dev /dev \
+      --ro-bind /usr/lib /run/lock \
+      --ro-bind /usr/lib /tmp \
+      -- "$LOCK_SCRIPT" test_error_22 -- echo test
+else
+  echo "  ⊘ SKIPPED: bwrap not installed (install 'bubblewrap' to run)"
+fi
 
 # Summary
 echo

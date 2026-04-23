@@ -1,5 +1,6 @@
 #!/bin/bash
 # Edge case and stress tests for shlock
+# shellcheck disable=SC2324  # var+=1 is correct on declare -i globals per BCS0505
 
 set -euo pipefail
 shopt -s inherit_errexit
@@ -25,9 +26,9 @@ trap cleanup EXIT
 assert_success() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -40,16 +41,16 @@ assert_exit_code() {
   local -- msg=$1
   local -i expected=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i actual=0
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" &>/dev/null
   actual=$?
   set -e
 
   if ((actual == expected)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (exit code: $actual)"
     return 0
   else
@@ -75,15 +76,16 @@ assert_exit_code "Command with large output succeeds" 0 \
 
 echo
 echo "Test: Command with stderr output"
-OUTPUT_FILE="/tmp/test_edge_stderr_$$"
+declare -- OUTPUT_FILE="/tmp/test_edge_stderr_$$"
+declare -i EXIT_CODE=0
 set +e
 "$LOCK_SCRIPT" test_edge_4 -- bash -c 'echo "error" >&2; exit 0' 2>"$OUTPUT_FILE"
 EXIT_CODE=$?
 set -e
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if ((EXIT_CODE == 0)) && grep -q "error" "$OUTPUT_FILE"; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Command stderr is preserved"
 else
   echo "  ✗ Command stderr should be preserved"
@@ -97,13 +99,13 @@ assert_exit_code "Command with mixed output succeeds" 0 \
 
 echo
 echo "Test: Command that creates files"
-TEST_FILE="/tmp/test_edge_file_$$"
+declare -- TEST_FILE="/tmp/test_edge_file_$$"
 assert_exit_code "Command can create files" 0 \
   "$LOCK_SCRIPT" test_edge_6 -- bash -c "echo 'content' > $TEST_FILE"
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ -f "$TEST_FILE" ]] && [[ "$(cat "$TEST_FILE")" == "content" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Created file has expected content"
 else
   echo "  ✗ File should be created with correct content"
@@ -122,13 +124,13 @@ assert_exit_code "Command in pipeline" 0 \
 
 echo
 echo "Test: Command with redirection"
-REDIR_FILE="/tmp/test_edge_redir_$$"
+declare -- REDIR_FILE="/tmp/test_edge_redir_$$"
 assert_exit_code "Command with output redirection" 0 \
   "$LOCK_SCRIPT" test_edge_9 -- bash -c "echo 'redirected' > $REDIR_FILE"
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ -f "$REDIR_FILE" ]] && [[ "$(cat "$REDIR_FILE")" == "redirected" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Redirected output written correctly"
 else
   echo "  ✗ Redirection should work correctly"
@@ -137,7 +139,7 @@ rm -f "$REDIR_FILE"
 
 echo
 echo "Test: Nested lock attempts (should fail)"
-NESTED_SCRIPT="/tmp/test_edge_nested_$$"
+declare -- NESTED_SCRIPT="/tmp/test_edge_nested_$$"
 cat > "$NESTED_SCRIPT" <<'EOF'
 #!/bin/bash
 LOCK_SCRIPT="$1"
@@ -163,13 +165,14 @@ assert_exit_code "Large max-age (168 hours) works" 0 \
 
 echo
 echo "Test: Command that changes directory"
+declare -- ORIG_DIR
 ORIG_DIR=$(pwd)
 assert_exit_code "Command that changes directory" 0 \
   "$LOCK_SCRIPT" test_edge_12 -- bash -c 'cd /tmp && pwd'
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ "$(pwd)" == "$ORIG_DIR" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Directory change in command doesn't affect caller"
 else
   echo "  ✗ Directory should be unchanged after command"
@@ -182,13 +185,13 @@ assert_exit_code "Command with custom environment variable" 0 \
 
 echo
 echo "Test: Command that spawns background process"
-BG_FILE="/tmp/test_edge_bg_$$"
-"$LOCK_SCRIPT" test_edge_14 -- bash -c "(sleep 0.2 && echo 'bg' > $BG_FILE) &" >/dev/null 2>&1
+declare -- BG_FILE="/tmp/test_edge_bg_$$"
+"$LOCK_SCRIPT" test_edge_14 -- bash -c "(sleep 0.2 && echo 'bg' > $BG_FILE) &" &>/dev/null
 sleep 0.3
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ -f "$BG_FILE" ]] && [[ "$(cat "$BG_FILE")" == "bg" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Background process spawned by command completes"
 else
   echo "  ✗ Background process should complete"
@@ -197,17 +200,18 @@ rm -f "$BG_FILE"
 
 echo
 echo "Test: Rapid sequential acquisitions (stress test)"
-STRESS_COUNT=20
-STRESS_SUCCESS=0
-for i in $(seq 1 $STRESS_COUNT); do
-  if "$LOCK_SCRIPT" test_edge_15 -- echo "iteration $i" >/dev/null 2>&1; then
-    ((++STRESS_SUCCESS))
+declare -i STRESS_COUNT=20
+declare -i STRESS_SUCCESS=0
+declare -i i
+for ((i=1; i<=STRESS_COUNT; i+=1)); do
+  if "$LOCK_SCRIPT" test_edge_15 -- echo "iteration $i" &>/dev/null; then
+    STRESS_SUCCESS+=1
   fi
 done
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if ((STRESS_SUCCESS == STRESS_COUNT)); then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ $STRESS_COUNT rapid sequential acquisitions succeeded"
 else
   echo "  ✗ Expected $STRESS_COUNT successes, got $STRESS_SUCCESS"
@@ -216,16 +220,17 @@ fi
 echo
 echo "Test: PID file accuracy"
 "$LOCK_SCRIPT" test_edge_16 -- sleep 0.3 &
-LOCK_HOLDER=$!
+declare -i LOCK_HOLDER=$!
 sleep 0.1
 
 if [[ -f /run/lock/test_edge_16.pid ]]; then
-  PID_FROM_FILE=$(cat /run/lock/test_edge_16.pid)
-  ((++TEST_COUNT))
+  declare -- PID_FROM_FILE
+  PID_FROM_FILE=$(<"/run/lock/test_edge_16.pid")
+  TEST_COUNT+=1
 
   # The PID in the file should be for a child of the lock holder
-  if ps -p "$PID_FROM_FILE" >/dev/null 2>&1; then
-    ((++TEST_PASSED))
+  if ps -p "$PID_FROM_FILE" &>/dev/null; then
+    TEST_PASSED+=1
     echo "  ✓ PID in pidfile is valid and running"
   else
     echo "  ✗ PID in pidfile should be running"
@@ -244,9 +249,9 @@ echo "Test: Lock cleanup on normal exit"
 "$LOCK_SCRIPT" test_edge_17 -- echo "test" >/dev/null
 sleep 0.1
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if [[ -f /run/lock/test_edge_17.lock ]] && [[ ! -f /run/lock/test_edge_17.pid ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Lock file persists but PID file cleaned up after exit"
 else
   echo "  ✗ Lock file should persist but PID file should be removed"
@@ -262,6 +267,32 @@ echo "Test: Command that uses file descriptor 200"
 # This tests that our lock mechanism doesn't break if command uses same FD
 assert_exit_code "Command using FD 200" 0 \
   "$LOCK_SCRIPT" test_edge_19 -- bash -c 'exec 200>/dev/null; echo "test" >&200'
+
+echo
+echo "Test: Lock directory fallback chain (primary selection)"
+# Confirm determine_lock_dir() picks /run/lock when it is writable,
+# and does NOT create /tmp/locks as a side effect.
+declare -i TMP_LOCKS_PRE_EXISTED=0
+[[ -d /tmp/locks ]] && TMP_LOCKS_PRE_EXISTED=1
+
+"$LOCK_SCRIPT" test_edge_lockdir_1 -- echo "lockdir test" >/dev/null
+
+TEST_COUNT+=1
+if [[ -f /run/lock/test_edge_lockdir_1.lock ]]; then
+  TEST_PASSED+=1
+  echo "  ✓ Lock lands in primary dir /run/lock when writable"
+else
+  echo "  ✗ Expected /run/lock/test_edge_lockdir_1.lock, not found"
+fi
+
+TEST_COUNT+=1
+if ((TMP_LOCKS_PRE_EXISTED)) || [[ ! -d /tmp/locks ]]; then
+  TEST_PASSED+=1
+  echo "  ✓ /tmp/locks not created when /run/lock is writable"
+else
+  echo "  ✗ /tmp/locks was created despite /run/lock being writable"
+fi
+rm -f /run/lock/test_edge_lockdir_1.lock /run/lock/test_edge_lockdir_1.pid
 
 # Summary
 echo

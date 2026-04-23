@@ -1,5 +1,6 @@
 #!/bin/bash
 # Wait and timeout feature tests for shlock
+# shellcheck disable=SC2324  # var+=1 is correct on declare -i globals per BCS0505
 
 set -euo pipefail
 shopt -s inherit_errexit
@@ -24,9 +25,9 @@ trap cleanup EXIT
 assert_success() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -39,16 +40,16 @@ assert_exit_code() {
   local -- msg=$1
   local -i expected=$2
   shift 2
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i actual=0
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" &>/dev/null
   actual=$?
   set -e
 
   if ((actual == expected)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (exit code: $actual)"
     return 0
   else
@@ -63,18 +64,18 @@ assert_duration() {
   local -i max_seconds=$3
   shift 3
 
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
 
   local -i start_time end_time duration
   start_time=$(date +%s)
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" &>/dev/null
   set -e
   end_time=$(date +%s)
   duration=$((end_time - start_time))
 
   if ((duration >= min_seconds && duration <= max_seconds)); then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg (took ${duration}s, expected ${min_seconds}-${max_seconds}s)"
     return 0
   else
@@ -87,13 +88,14 @@ assert_duration() {
 echo "Test: Basic --wait functionality"
 # Start a process holding lock for 2 seconds
 "$LOCK_SCRIPT" test_wait_1 -- sleep 2 &
-HOLDER_PID=$!
+declare -i HOLDER_PID=$!
 sleep 0.2
 
 # Try to acquire with --wait (should succeed after ~2 seconds)
+declare -i START_TIME END_TIME DURATION
 START_TIME=$(date +%s)
 "$LOCK_SCRIPT" --wait test_wait_1 -- echo "acquired" >/dev/null &
-WAITER_PID=$!
+declare -i WAITER_PID=$!
 
 # Wait for holder to finish
 wait "$HOLDER_PID" || true
@@ -102,9 +104,9 @@ wait "$WAITER_PID" || true
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 if ((DURATION >= 1 && DURATION <= 4)); then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ --wait blocks and acquires lock after holder releases (${DURATION}s)"
 else
   echo "  ✗ Expected duration 1-4s, got ${DURATION}s"
@@ -160,30 +162,31 @@ wait "$HOLDER_PID" 2>/dev/null || true
 
 echo
 echo "Test: Multiple waiters in sequence"
-COUNTER_FILE="/tmp/test_wait_counter_$$"
+declare -- COUNTER_FILE="/tmp/test_wait_counter_$$"
 echo "0" > "$COUNTER_FILE"
 
 # Start first holder
 "$LOCK_SCRIPT" test_wait_8 -- bash -c "echo 1 > $COUNTER_FILE; sleep 1" &
-PID1=$!
+declare -i PID1=$!
 sleep 0.2
 
 # Start second waiter
 "$LOCK_SCRIPT" --wait test_wait_8 -- bash -c "echo 2 > $COUNTER_FILE; sleep 0.5" &
-PID2=$!
+declare -i PID2=$!
 sleep 0.1
 
 # Start third waiter
 "$LOCK_SCRIPT" --wait test_wait_8 -- bash -c "echo 3 > $COUNTER_FILE" &
-PID3=$!
+declare -i PID3=$!
 
 # Wait for all to complete
 wait "$PID1" "$PID2" "$PID3" 2>/dev/null || true
 
-FINAL_VALUE=$(cat "$COUNTER_FILE")
-((++TEST_COUNT))
+declare -- FINAL_VALUE
+FINAL_VALUE=$(<"$COUNTER_FILE")
+TEST_COUNT+=1
 if [[ "$FINAL_VALUE" == "3" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Multiple waiters execute in sequence"
 else
   echo "  ✗ Expected final value 3, got $FINAL_VALUE"
@@ -195,6 +198,7 @@ echo "Test: --wait with stale lock"
 # Create a stale lock
 touch /run/lock/test_wait_9.lock
 echo "99999" > /run/lock/test_wait_9.pid
+declare -- TIMESTAMP
 TIMESTAMP=$(date -d "@$(($(date +%s) - 90000))" '+%Y%m%d%H%M.%S')
 touch -t "$TIMESTAMP" /run/lock/test_wait_9.lock 2>/dev/null || true
 
@@ -203,14 +207,20 @@ assert_duration "--wait with stale lock doesn't actually wait" 0 2 \
   "$LOCK_SCRIPT" --wait test_wait_9 -- echo "acquired"
 
 echo
-echo "Test: Zero timeout"
+echo "Test: Zero timeout precise semantics"
+# --timeout 0 with lock free: succeeds immediately (flock -w 0 tries once)
+assert_exit_code "--timeout 0 with free lock succeeds (exit 0)" 0 \
+  "$LOCK_SCRIPT" --timeout 0 test_wait_10a -- echo "test"
+
+# --timeout 0 with lock held: fails with timeout exit code 24 (not exit 1)
 "$LOCK_SCRIPT" test_wait_10 -- sleep 2 &
 HOLDER_PID=$!
 sleep 0.2
 
-# flock -w 0 actually tries once and may succeed immediately if lock just became available
-# So this test just ensures zero timeout is accepted
-assert_duration "Zero timeout returns quickly" 0 2 \
+assert_exit_code "--timeout 0 with held lock returns exit 24 (not 1)" 24 \
+  "$LOCK_SCRIPT" --timeout 0 test_wait_10 -- echo "test"
+
+assert_duration "--timeout 0 returns quickly even when held" 0 2 \
   "$LOCK_SCRIPT" --wait --timeout 0 test_wait_10 -- echo "test"
 
 kill -TERM "$HOLDER_PID" 2>/dev/null || true
@@ -227,13 +237,14 @@ echo "Test: --wait mode error messages"
 HOLDER_PID=$!
 sleep 0.2
 
-((++TEST_COUNT))
+TEST_COUNT+=1
+declare -- OUTPUT
 set +e
 OUTPUT=$("$LOCK_SCRIPT" --wait --timeout 1 test_wait_12 -- echo "test" 2>&1)
 set -e
 
 if [[ "$OUTPUT" =~ "Timeout" ]]; then
-  ((++TEST_PASSED))
+  TEST_PASSED+=1
   echo "  ✓ Timeout error message is informative"
 else
   echo "  ✗ Expected timeout message in: $OUTPUT"

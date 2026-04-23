@@ -22,9 +22,9 @@ trap cleanup EXIT
 assert_success() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   else
@@ -36,18 +36,20 @@ assert_success() {
 assert_failure() {
   local -- msg=$1
   shift
-  ((++TEST_COUNT))
+  TEST_COUNT+=1
   if "$@"; then
     echo "  ✗ $msg (expected failure, got success)"
     return 1
   else
-    ((++TEST_PASSED))
+    TEST_PASSED+=1
     echo "  ✓ $msg"
     return 0
   fi
 }
 
 # Create a stale lock file
+# Fails loudly if mtime cannot be backdated — stale-lock tests are meaningless
+# without a believable past mtime, and silent fallback masks CI breakage.
 create_stale_lock() {
   local -- lockname=$1
   local -i age_hours=${2:-25}  # Default 25 hours old
@@ -59,18 +61,26 @@ create_stale_lock() {
   touch "$lockfile"
   echo "99999" > "$pidfile"  # Non-existent PID
 
-  # Make it old using touch
+  # Backdate mtime: try `touch -t` first (POSIX-ish, widely available)
   local -i age_seconds=$((age_hours * 3600))
   local -- timestamp
   timestamp=$(date -d "@$(($(date +%s) - age_seconds))" '+%Y%m%d%H%M.%S')
-  touch -t "$timestamp" "$lockfile" 2>/dev/null || {
-    # Fallback if touch -t doesn't work
-    touch "$lockfile"
-    # Use Perl to set mtime if available
-    if command -v perl >/dev/null 2>&1; then
-      perl -e "utime(time - $age_seconds, time - $age_seconds, '$lockfile')"
-    fi
-  }
+  if touch -t "$timestamp" "$lockfile" 2>/dev/null; then
+    return 0
+  fi
+
+  # Fallback: Perl's utime() sets mtime directly
+  if command -v perl &>/dev/null \
+    && perl -e "utime(time - $age_seconds, time - $age_seconds, '$lockfile') or exit 1" 2>/dev/null
+  then
+    return 0
+  fi
+
+  # Hard-fail: stale-lock assertions downstream are invalid without a
+  # backdated mtime. Better to abort the suite than pass falsely.
+  echo "✗ FATAL: create_stale_lock() cannot backdate mtime on ${lockfile}" >&2
+  echo "  Neither 'touch -t' nor Perl 'utime' worked. Install coreutils or perl." >&2
+  exit 1
 }
 
 # Tests
@@ -83,7 +93,7 @@ echo
 echo "Test: Non-stale lock is not removed"
 # Actually hold the lock with a background process
 "$LOCK_SCRIPT" test_stale_2 -- sleep 2 &
-HOLDER_PID=$!
+declare -i HOLDER_PID=$!
 sleep 0.2
 assert_failure "Recent lock held by active process prevents lock acquisition" \
   "$LOCK_SCRIPT" test_stale_2 -- echo "test"
@@ -110,8 +120,9 @@ rm -f /run/lock/test_stale_4.lock /run/lock/test_stale_4.pid
 echo
 echo "Test: Stale lock with missing PID file"
 touch /run/lock/test_stale_5.lock
-timestamp=$(date -d "@$(($(date +%s) - 90000))" '+%Y%m%d%H%M.%S')
-touch -t "$timestamp" /run/lock/test_stale_5.lock 2>/dev/null || true
+declare -- TIMESTAMP
+TIMESTAMP=$(date -d "@$(($(date +%s) - 90000))" '+%Y%m%d%H%M.%S')
+touch -t "$TIMESTAMP" /run/lock/test_stale_5.lock 2>/dev/null || true
 # No PID file created
 assert_success "Stale lock without PID file is removed" \
   "$LOCK_SCRIPT" test_stale_5 -- echo "test"
@@ -127,28 +138,30 @@ rm -f /run/lock/test_stale_6.lock /run/lock/test_stale_6.pid
 
 echo
 echo "Test: Invalid --max-age values"
-((++TEST_COUNT))
+declare -- OUTPUT
+declare -i EXIT_CODE=0
+TEST_COUNT+=1
 set +e
-output=$("$LOCK_SCRIPT" --max-age abc test_stale_7 -- echo "test" 2>&1)
-exit_code=$?
+OUTPUT=$("$LOCK_SCRIPT" --max-age abc test_stale_7 -- echo "test" 2>&1)
+EXIT_CODE=$?
 set -e
-if ((exit_code == 22)) && [[ "$output" =~ "numeric" ]]; then
-  ((++TEST_PASSED))
+if ((EXIT_CODE == 22)) && [[ "$OUTPUT" =~ "numeric" ]]; then
+  TEST_PASSED+=1
   echo "  ✓ Non-numeric max-age rejected"
 else
-  echo "  ✗ Non-numeric max-age should be rejected with exit code 22 (got $exit_code)"
+  echo "  ✗ Non-numeric max-age should be rejected with exit code 22 (got $EXIT_CODE)"
 fi
 
-((++TEST_COUNT))
+TEST_COUNT+=1
 set +e
-output=$("$LOCK_SCRIPT" --max-age -- test_stale_8 -- echo "test" 2>&1)
-exit_code=$?
+OUTPUT=$("$LOCK_SCRIPT" --max-age -- test_stale_8 -- echo "test" 2>&1)
+EXIT_CODE=$?
 set -e
-if ((exit_code == 22)); then
-  ((++TEST_PASSED))
+if ((EXIT_CODE == 22)); then
+  TEST_PASSED+=1
   echo "  ✓ Missing max-age value rejected"
 else
-  echo "  ✗ Missing max-age value should be rejected with exit code 22 (got $exit_code)"
+  echo "  ✗ Missing max-age value should be rejected with exit code 22 (got $EXIT_CODE)"
 fi
 
 echo
@@ -161,7 +174,7 @@ assert_success "Lock with 0 max-age threshold removes any existing lock" \
 echo
 echo "Test: Stale lock cleanup removes PID file"
 create_stale_lock test_stale_10 30
-"$LOCK_SCRIPT" test_stale_10 -- echo "test" >/dev/null 2>&1 || true
+"$LOCK_SCRIPT" test_stale_10 -- echo "test" &>/dev/null || true
 # Lock file persists (it gets truncated and recreated by exec 200>)
 assert_success "Lock file persists after acquisition" \
   test -f /run/lock/test_stale_10.lock
