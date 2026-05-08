@@ -1,5 +1,5 @@
 #!/bin/bash
-#shellcheck disable=SC2317  # Defensive: cleanup() is invoked via EXIT trap (indirect)
+#shellcheck disable=SC2317,SC2329  # Defensive: cleanup() is invoked via EXIT trap (indirect)
 #
 # shlock - File-based locking system with stale lock detection
 #
@@ -96,9 +96,9 @@ declare -i STEAL_MODE=0
 
 # Messaging functions
 
-warn() { >&2 echo "$SCRIPT_NAME: ▲ $*"; }
-error() { >&2 echo "$SCRIPT_NAME: ✗ $*"; }
-die() { (($# < 2)) || error "${@:2}"; exit "${1:-1}"; }
+warn() { >&2 printf "$SCRIPT_NAME: ▲ %s\n" "$@"; }
+error() { >&2 printf "$SCRIPT_NAME: ✗ %s\n" "$@"; }
+die() { error "${@:2}"; exit "$1"; }
 
 # Prompt user with a y/n question on stderr (30s timeout, single keypress).
 # $1: prompt text (default 'Continue?'). Returns 0 on 'y'/'Y', 1 otherwise
@@ -273,9 +273,7 @@ cleanup() {
 #   holder PID running      → warn, prompt via yn(); exit 1 if user declines
 # WARNING: stealing an active lock breaks the mutual-exclusion guarantee.
 steal_lock() {
-  if [[ ! -f $LOCKFILE ]]; then
-    return 0
-  fi
+  [[ -f $LOCKFILE ]] || return 0
 
   local -- holder_pid
   holder_pid=$(read_holder_pid)
@@ -294,16 +292,16 @@ steal_lock() {
     || warn 'Failed to remove lock files during steal'
 }
 
-# Main entry
+# --- Main entry ---
 
 main() {
   while (($#)); do
     case $1 in
       -h|--help)
-        show_help; return 0
+        show_help; exit 0
         ;;
       -V|--version)
-        printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"; return 0
+        printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"; exit 0
         ;;
       -m|--max-age)
         arg2_num "$@"; shift
@@ -420,7 +418,7 @@ main() {
   local -i exit_code=0
   "$@" || exit_code=$?
 
-  exit "$exit_code"
+  exit $exit_code
 }
 
 main "$@"
