@@ -158,7 +158,7 @@ brew install pandoc
 
 Bash completion is automatically installed with `make install` or `./install.sh install`. It provides intelligent tab-completion for:
 
-- **Options**: `-m`, `-w`, `-t`, `-s`, `--max-age`, `--wait`, `--timeout`, `--steal`, `--help`, `--version`
+- **Options**: `-m`, `-w`, `-t`, `-s`, `-h`, `-V`, `--max-age`, `--wait`, `--timeout`, `--steal`, `--help`, `--version`
 - **Lock names**: Existing locks from `/run/lock/*.lock`
 - **Commands**: After `--`, completes available commands and files
 
@@ -249,6 +249,7 @@ shlock [OPTIONS] [LOCKNAME] -- COMMAND [ARGS...]
 | 0 | Command executed successfully (wrapped command exit code passed through) |
 | 1 | Lock held (non-timeout acquisition failure) or steal cancelled by user |
 | 2 | Usage error (missing `COMMAND` or `--` separator) |
+| 5 | I/O error (lock acquired but PID file write failed — post-acquisition disk/fs failure) |
 | 13 | Permission denied (no writable lock directory) |
 | 22 | Invalid argument (unknown option, bad `LOCKNAME`, non-numeric value) |
 | 24 | Timeout (`--timeout N` expired) |
@@ -344,6 +345,7 @@ ExecStart=/usr/local/bin/shlock --wait service-name -- /usr/local/bin/your-servi
 if ! shlock --timeout 60 deploy-prod -- ./deploy.sh production; then
     case $? in
       1)  echo "Deployment already in progress (lock held)" ;;
+      5)  echo "I/O error writing PID file after lock acquired" ;;
       24) echo "Timed out waiting for deployment lock" ;;
       *)  echo "shlock or deployment failed with code $?" ;;
     esac
@@ -363,6 +365,7 @@ else
     case $exit_code in
         1)  echo "Lock is held by another process" ;;
         2)  echo "Usage error (missing COMMAND or -- separator)" ;;
+        5)  echo "I/O error: PID file write failed after lock was acquired" ;;
         13) echo "Permission denied: no writable lock directory" ;;
         22) echo "Invalid argument" ;;
         24) echo "Timeout waiting for lock" ;;
@@ -755,6 +758,17 @@ This utility is part of the Okusi Group bash scripting standard library.
 
 ## Changelog
 
+### v2.0.1 (2026-04-23)
+
+Bug-fix and hardening release. No CLI or exit-code changes for successful paths.
+
+- **New exit code 5** — I/O failure writing the PID file *after* the lock has been acquired (disk full, read-only filesystem, etc.). Previously surfaced as an opaque `echo` failure.
+- **Trap ordering fix** — `trap cleanup EXIT` is now installed immediately after opening fd 200, not after `flock` succeeds. An abort between those two steps still runs cleanup.
+- **Stale-lock reclaim** — locks younger than `--max-age` but held by a dead PID are now reclaimed automatically with a warning (previously left to age-out).
+- **Installation** — `COMPDIR` default now tiers by `PREFIX`: system installs (`/usr`, `/usr/local`) place completion at `/etc/bash_completion.d/shlock`; user/custom prefixes place it at `$PREFIX/share/bash-completion/completions/shlock`. Overridable via `make COMPDIR=…` or `COMPDIR=… ./install.sh`.
+- **Tests** — extended edge coverage and BCS-cleaned the suite; runs 127 cases across 7 files.
+- **Help output** — minor formatting alignment (BCS0704).
+
 ### v2.0.0 (2026-04-19) — Breaking Change
 
 Exit codes remapped to BCS-canonical values. **No compatibility flag provided** — callers that branch on `$?` MUST update.
@@ -780,10 +794,10 @@ See `git log`.
 
 - `flock(1)` - Linux manual page
 - `fcntl(2)` - POSIX file locking
-- Bash Coding Standard: `/ai/scripts/Okusi/bash-coding-standard/`
+- Bash Coding Standard: `/usr/local/share/yatti/BCS/data/`
 
 ---
 
-**Version**: 2.0.0
-**Last Updated**: 2026-04-19
+**Version**: 2.0.1
+**Last Updated**: 2026-05-08
 **Maintainer**: Gary Dean (Biksu Okusi)

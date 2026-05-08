@@ -33,7 +33,7 @@
 #   - Non-blocking by default (fails immediately if lock is held)
 #   - With -w/--wait: blocks until lock is available
 #   - With -t/--timeout: waits up to specified seconds
-#   - Stale lock detection: removes locks older than --max-age or with dead holders
+#   - Stale lock detection: cleans dead-holder locks; refuses age-stale locks if holder still alive
 #
 # EXIT CODES (BCS-canonical):
 #   0   - Command executed successfully (wrapped command exit code passed through)
@@ -100,6 +100,9 @@ warn() { >&2 echo "$SCRIPT_NAME: ▲ $*"; }
 error() { >&2 echo "$SCRIPT_NAME: ✗ $*"; }
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-1}"; }
 
+# Prompt user with a y/n question on stderr (30s timeout, single keypress).
+# $1: prompt text (default 'Continue?'). Returns 0 on 'y'/'Y', 1 otherwise
+# (including timeout). Used for --steal confirmation against a running holder.
 yn() {
   local -- REPLY=''
   >&2 printf '%s: ▲ %s y/n ' "$SCRIPT_NAME" "${1:-Continue?}"
@@ -244,43 +247,49 @@ is_lock_stale() {
   ((lock_age > max_age_seconds))
 }
 
+# Remove both lock and pid files after age-based staleness is confirmed.
+# Non-fatal on rm failure (warns and continues so acquisition can still be
+# attempted; flock on the existing file will simply fail loudly if still held).
 clean_stale_lock() {
   warn "Lock is older than $MAX_AGE_HOURS hours, removing stale lock"
   rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
     || warn "Failed to remove stale lock files ${LOCKFILE@Q} ${PIDFILE@Q}"
 }
 
+# EXIT-trap handler (installed after flock succeeds). Removes the PID file
+# only; the lock file is retained intentionally so the next acquisition
+# reuses it without racing to recreate. flock itself is released when fd 200
+# closes at process exit. SC2317 disabled at top of file because shellcheck
+# cannot see this function is reached via trap.
 cleanup() {
   trap - EXIT
   rm -f "$PIDFILE" 2>/dev/null ||:
-  # flock is released when fd 200 closes; lock file persists for reuse
 }
 
+# Forcefully remove an existing lock (invoked by --steal).
+# Decision tree:
+#   no lock file            → noop (caller proceeds with normal acquisition)
+#   holder PID dead/unknown → remove lock + pid automatically (no prompt)
+#   holder PID running      → warn, prompt via yn(); exit 1 if user declines
+# WARNING: stealing an active lock breaks the mutual-exclusion guarantee.
 steal_lock() {
-  # Check if lock exists
   if [[ ! -f $LOCKFILE ]]; then
-    # No lock to steal, just proceed normally
     return 0
   fi
 
-  # Read holder PID
   local -- holder_pid
   holder_pid=$(read_holder_pid)
 
-  # Check if holder process is running
   if [[ $holder_pid != unknown ]] && is_process_running "$holder_pid"; then
-    # Process is RUNNING - warn and prompt for confirmation
     warn "Lock ${LOCKNAME@Q} is held by RUNNING process PID $holder_pid"
     if ! yn 'Really steal this lock?'; then
       die 1 'Lock steal cancelled by user'
     fi
     warn "Stealing lock ${LOCKNAME@Q} from running process..."
   else
-    # Process is DEAD - just clean up automatically (no prompt needed)
-    warn "Removing abandoned lock ${LOCKNAME@Q} (process $holder_pid is dead)"
+    warn "Removing abandoned lock ${LOCKNAME@Q} (holder PID $holder_pid no longer running)"
   fi
 
-  # Remove lock and pid files
   rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
     || warn 'Failed to remove lock files during steal'
 }
@@ -351,7 +360,7 @@ main() {
   LOCKFILE="$LOCK_DIR"/"$LOCKNAME".lock
   PIDFILE="$LOCK_DIR"/"$LOCKNAME".pid
 
-  # Check if lock file exists: cleanup if stale by age, or if holder is dead
+  # Lock file exists: refuse age-stale lock if holder running, else clean by age or reclaim from dead holder
   if [[ -f $LOCKFILE ]]; then
     local -- old_pid
     old_pid=$(read_holder_pid)
@@ -365,7 +374,7 @@ main() {
       clean_stale_lock
     elif [[ $old_pid != unknown ]] && ! is_process_running "$old_pid"; then
       # Lock within max-age but holder process is dead: reclaim
-      warn "removing abandoned lock (holder PID $old_pid no longer running)"
+      warn "Removing abandoned lock (holder PID $old_pid no longer running)"
       rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
         || warn 'Failed to reclaim abandoned lock'
     fi
