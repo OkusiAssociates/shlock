@@ -21,6 +21,8 @@ cleanup() {
   rm -f /run/lock/test.error*.lock /run/lock/test.error*.pid 2>/dev/null || true
   rm -f /run/lock/.hidden.lock /run/lock/.hidden.pid 2>/dev/null || true
   rm -f /run/lock/12345.lock /run/lock/12345.pid 2>/dev/null || true
+  # PID file write-failure test creates a directory at $PIDFILE — clean it up if leaked
+  rmdir /run/lock/test_error_pidfail.pid 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -243,6 +245,22 @@ echo
 echo "Test: Empty command"
 assert_exit_code "Empty string as command propagates exit code 127" 127 \
   "$LOCK_SCRIPT" test_error_20 -- ""
+
+echo
+echo "Test: PID file write failure returns exit code 5 (post-acquisition I/O)"
+# Pre-create PIDFILE as a directory so 'echo $$ > $PIDFILE' fails after flock succeeds.
+# This exercises the BCS0604 exit-5 path added in v2.0.1 (line 418 of shlock).
+mkdir /run/lock/test_error_pidfail.pid 2>/dev/null || true
+if [[ -d /run/lock/test_error_pidfail.pid ]]; then
+  assert_exit_code "PID file write failure returns exit code 5" 5 \
+    "$LOCK_SCRIPT" test_error_pidfail -- echo "should not execute"
+  assert_contains "Exit-5 error message mentions PID file" "PID file" \
+    "$LOCK_SCRIPT" test_error_pidfail -- echo "should not execute"
+  rmdir /run/lock/test_error_pidfail.pid 2>/dev/null || true
+  rm -f /run/lock/test_error_pidfail.lock 2>/dev/null || true
+else
+  echo "  ⊘ SKIPPED: cannot create test PIDFILE directory in /run/lock"
+fi
 
 echo
 echo "Test: Permission denied when no writable lock dir (bwrap sandbox)"

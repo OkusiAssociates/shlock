@@ -29,7 +29,7 @@ A robust, production-ready file-based locking utility using `flock(1)` for safe 
 - **Lock Stealing**: Administrative override to break held or abandoned locks (`--steal`)
 - **Safe for Automation**: Ideal for cron jobs, systemd services, and CI/CD pipelines
 - **Comprehensive Error Messages**: Clear, actionable error reporting
-- **Battle-tested**: 127 comprehensive test cases
+- **Battle-tested**: 138 comprehensive test cases
 
 ## Installation
 
@@ -486,7 +486,7 @@ shlock --steal backup -- /usr/local/bin/backup.sh
 
 ## Testing
 
-The utility includes a comprehensive test suite with 127 test cases covering all functionality.
+The utility includes a comprehensive test suite with 138 test cases covering all functionality.
 
 ### Running Tests
 
@@ -504,11 +504,11 @@ cd /ai/scripts/lib/shlock/tests
 
 - **test_basic.sh** (21 tests): Basic functionality, argument handling, exit codes, short option bundling, wrapped command propagation
 - **test_concurrent.sh** (13 tests): Concurrent lock acquisition, race conditions
-- **test_edge_cases.sh** (24 tests): Edge cases, stress tests, special characters
-- **test_errors.sh** (36 tests): Error handling, invalid inputs, signal handling, LOCKNAME sanitization
+- **test_edge_cases.sh** (26 tests): Edge cases, stress tests, special characters
+- **test_errors.sh** (40 tests): Error handling, invalid inputs, signal handling, LOCKNAME sanitization, post-acquisition PID-file I/O failure
 - **test_stale_locks.sh** (11 tests): Stale lock detection, max-age thresholds
-- **test_steal.sh** (9 tests): Lock stealing, dead/running process handling, steal combinations
-- **test_wait_timeout.sh** (13 tests): Blocking mode, timeout behavior, queuing
+- **test_steal.sh** (12 tests): Lock stealing, dead/running process handling, steal combinations
+- **test_wait_timeout.sh** (15 tests): Blocking mode, timeout behavior, queuing
 
 ## Troubleshooting
 
@@ -766,7 +766,7 @@ Bug-fix and hardening release. No CLI or exit-code changes for successful paths.
 - **Trap ordering fix** — `trap cleanup EXIT` is now installed immediately after opening fd 200, not after `flock` succeeds. An abort between those two steps still runs cleanup.
 - **Stale-lock reclaim** — locks younger than `--max-age` but held by a dead PID are now reclaimed automatically with a warning (previously left to age-out).
 - **Installation** — `COMPDIR` default now tiers by `PREFIX`: system installs (`/usr`, `/usr/local`) place completion at `/etc/bash_completion.d/shlock`; user/custom prefixes place it at `$PREFIX/share/bash-completion/completions/shlock`. Overridable via `make COMPDIR=…` or `COMPDIR=… ./install.sh`.
-- **Tests** — extended edge coverage and BCS-cleaned the suite; runs 127 cases across 7 files.
+- **Tests** — +9 assertions for edge coverage; +2 assertions for exit-code-5 (post-acquisition PID-file I/O failure); suite runs 138 cases.
 - **Help output** — minor formatting alignment (BCS0704).
 
 ### v2.0.0 (2026-04-19) — Breaking Change
