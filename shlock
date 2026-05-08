@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #shellcheck disable=SC2317,SC2329  # Defensive: cleanup() is invoked via EXIT trap (indirect)
 #
 # shlock - File-based locking system with stale lock detection
@@ -75,16 +75,17 @@
 #   - Safe for use in cron jobs and automated scripts
 
 set -euo pipefail
-shopt -s inherit_errexit shift_verbose
+shopt -s inherit_errexit
+
 umask 0022
 
-declare -rx PATH=${HOME:-/root}/.local/bin:/usr/local/bin:/usr/bin:/bin
+declare -rx PATH=/usr/local/bin:/usr/bin:/bin
 
-# Script metadata
+# --- Script metadata ---
 declare -r VERSION=2.0.1
 declare -r SCRIPT_NAME=${0##*/}
 
-# Global variables
+# --- Global variables ---
 declare -- LOCKNAME=''
 declare -- LOCKFILE=''
 declare -- PIDFILE=''
@@ -94,8 +95,7 @@ declare -i TIMEOUT_SECONDS=0
 declare -i TIMEOUT_SET=0
 declare -i STEAL_MODE=0
 
-# Messaging functions
-
+# --- Messaging functions ---
 warn() { >&2 printf "$SCRIPT_NAME: ▲ %s\n" "$@"; }
 error() { >&2 printf "$SCRIPT_NAME: ✗ %s\n" "$@"; }
 die() { error "${@:2}"; exit "$1"; }
@@ -111,8 +111,7 @@ yn() {
   [[ ${REPLY,,} == y ]]
 }
 
-# Usage display -----------------------
-
+# --- Usage display ---
 show_help() {
   cat <<HELP
 $SCRIPT_NAME $VERSION - file-based locking system with stale lock detection
@@ -170,8 +169,7 @@ Examples:
 HELP
 }
 
-# Helper functions
-
+# --- Helper functions ---
 # Validate that $2 exists and is numeric, die with error if not
 arg2_num() {
   if (($# < 2)) || [[ ! $2 =~ ^[0-9]+$ ]]; then
@@ -229,15 +227,16 @@ read_holder_pid() {
 }
 
 # Return 0 if $1 lockfile mtime is older than MAX_AGE_HOURS; 1 otherwise.
-# Note: mtime is updated on each acquisition (file opened with '>'), so this
-# tracks the most recent lock attempt, not the original creation time.
+# Note: mtime tracks lockfile creation (or last cleanup-recreate), not each
+# acquisition attempt — acquirers open fd 200 with '>>' (append, no write),
+# which preserves mtime. Stale-by-age detection is reliable across polling.
 is_lock_stale() {
   local -- lockfile=$1
   local -i max_age_seconds=$((MAX_AGE_HOURS * 3600))
 
   [[ -f $lockfile ]] || return 1  # Not stale if doesn't exist
 
-  local -- mtime
+  local -i mtime
   mtime=$(stat -c %Y "$lockfile" 2>/dev/null) || {
     warn "Cannot stat ${lockfile@Q}; treating as not-stale"
     return 1
@@ -252,7 +251,7 @@ is_lock_stale() {
 # attempted; flock on the existing file will simply fail loudly if still held).
 clean_stale_lock() {
   warn "Lock is older than $MAX_AGE_HOURS hours, removing stale lock"
-  rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
+  rm -f -- "$LOCKFILE" "$PIDFILE" 2>/dev/null \
     || warn "Failed to remove stale lock files ${LOCKFILE@Q} ${PIDFILE@Q}"
 }
 
@@ -263,7 +262,7 @@ clean_stale_lock() {
 # cannot see this function is reached via trap.
 cleanup() {
   trap - EXIT
-  rm -f "$PIDFILE" 2>/dev/null ||:
+  rm -f -- "$PIDFILE" 2>/dev/null ||:
 }
 
 # Forcefully remove an existing lock (invoked by --steal).
@@ -280,20 +279,19 @@ steal_lock() {
 
   if [[ $holder_pid != unknown ]] && is_process_running "$holder_pid"; then
     warn "Lock ${LOCKNAME@Q} is held by RUNNING process PID $holder_pid"
-    if ! yn 'Really steal this lock?'; then
-      die 1 'Lock steal cancelled by user'
-    fi
+    yn 'Really steal this lock?' || die 1 'Lock steal cancelled by user'
     warn "Stealing lock ${LOCKNAME@Q} from running process..."
+  elif [[ $holder_pid == unknown ]]; then
+    warn "Removing abandoned lock ${LOCKNAME@Q} (holder PID unrecorded)"
   else
     warn "Removing abandoned lock ${LOCKNAME@Q} (holder PID $holder_pid no longer running)"
   fi
 
-  rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
+  rm -f -- "$LOCKFILE" "$PIDFILE" 2>/dev/null \
     || warn 'Failed to remove lock files during steal'
 }
 
 # --- Main entry ---
-
 main() {
   while (($#)); do
     case $1 in
@@ -305,14 +303,14 @@ main() {
         ;;
       -m|--max-age)
         arg2_num "$@"; shift
-        MAX_AGE_HOURS=$1
+        MAX_AGE_HOURS=$(($1))
         ;;
       -w|--wait)
         WAIT_MODE=1
         ;;
       -t|--timeout)
         arg2_num "$@"; shift
-        TIMEOUT_SECONDS=$1
+        TIMEOUT_SECONDS=$(($1))
         TIMEOUT_SET=1
         ;;
       -s|--steal)
@@ -358,6 +356,12 @@ main() {
   LOCKFILE="$LOCK_DIR"/"$LOCKNAME".lock
   PIDFILE="$LOCK_DIR"/"$LOCKNAME".pid
 
+  # --steal runs before stale-cleanup so the user's explicit override is not
+  # short-circuited by the age-stale-with-running-holder refusal below.
+  if ((STEAL_MODE)); then
+    steal_lock
+  fi
+
   # Lock file exists: refuse age-stale lock if holder running, else clean by age or reclaim from dead holder
   if [[ -f $LOCKFILE ]]; then
     local -- old_pid
@@ -373,17 +377,15 @@ main() {
     elif [[ $old_pid != unknown ]] && ! is_process_running "$old_pid"; then
       # Lock within max-age but holder process is dead: reclaim
       warn "Removing abandoned lock (holder PID $old_pid no longer running)"
-      rm -f "$LOCKFILE" "$PIDFILE" 2>/dev/null \
+      rm -f -- "$LOCKFILE" "$PIDFILE" 2>/dev/null \
         || warn 'Failed to reclaim abandoned lock'
     fi
   fi
 
-  if ((STEAL_MODE)); then
-    steal_lock
-  fi
-
-  # Try to acquire lock using flock
-  exec 200>"$LOCKFILE"
+  # Try to acquire lock using flock. Open with '>>' (append, no truncation) so
+  # contender attempts do not refresh the lockfile mtime — keeps is_lock_stale
+  # honest under polling. flock semantics are unaffected by O_APPEND.
+  exec 200>>"$LOCKFILE"
   trap cleanup EXIT
 
   # Determine flock options (timeout takes priority over wait mode)

@@ -200,6 +200,47 @@ rm -f /run/lock/test_steal_11.pid    # Ensure pidfile missing
 assert_exit_code "Missing pidfile + --steal proceeds (exit 0)" 0 \
   "$LOCK_SCRIPT" --steal test_steal_11 -- echo "test"
 
+echo
+echo "Test: Steal of age-stale lock whose holder is still running"
+# Regression test: prior to the steal-before-stale-cleanup ordering fix, the
+# stale-with-running-holder branch would die 1 before steal_lock ran, defeating
+# the user's explicit --steal override. With the fix, steal proceeds normally
+# (prompts because holder is alive; piped 'y' approves the steal).
+sleep 60 &
+declare -i H1_HOLDER_PID=$!
+touch /run/lock/test_steal_h1.lock
+echo "$H1_HOLDER_PID" > /run/lock/test_steal_h1.pid
+# Backdate lockfile mtime past --max-age
+declare -- H1_TIMESTAMP
+H1_TIMESTAMP=$(date -d "@$(($(date +%s) - 90000))" '+%Y%m%d%H%M.%S')
+touch -t "$H1_TIMESTAMP" /run/lock/test_steal_h1.lock 2>/dev/null \
+  || perl -e "utime(time - 90000, time - 90000, '/run/lock/test_steal_h1.lock')" 2>/dev/null \
+  || true
+assert_exit_code "Steal of stale-but-alive-holder lock (confirmed) succeeds" 0 \
+  bash -c 'echo "y" | "$1" --steal --max-age 1 test_steal_h1 -- echo "stolen-stale-alive"' _ "$LOCK_SCRIPT"
+kill "$H1_HOLDER_PID" 2>/dev/null || true
+wait "$H1_HOLDER_PID" 2>/dev/null || true
+
+echo
+echo "Test: Steal of age-stale lock with running holder — user declines"
+# Companion to the previous test: same setup, but user pipes 'n' → exit 1
+# from the cancel branch (NOT from the age-stale branch we used to die in).
+sleep 60 &
+declare -i H1B_HOLDER_PID=$!
+touch /run/lock/test_steal_h1b.lock
+echo "$H1B_HOLDER_PID" > /run/lock/test_steal_h1b.pid
+declare -- H1B_TIMESTAMP
+H1B_TIMESTAMP=$(date -d "@$(($(date +%s) - 90000))" '+%Y%m%d%H%M.%S')
+touch -t "$H1B_TIMESTAMP" /run/lock/test_steal_h1b.lock 2>/dev/null \
+  || perl -e "utime(time - 90000, time - 90000, '/run/lock/test_steal_h1b.lock')" 2>/dev/null \
+  || true
+assert_contains "Stale-alive steal declined says 'cancelled' (not 'running for')" "cancelled by user" \
+  bash -c 'echo "n" | "$1" --steal --max-age 1 test_steal_h1b -- echo "should-not-run" 2>&1' _ "$LOCK_SCRIPT"
+kill "$H1B_HOLDER_PID" 2>/dev/null || true
+wait "$H1B_HOLDER_PID" 2>/dev/null || true
+rm -f /run/lock/test_steal_h1.lock /run/lock/test_steal_h1.pid \
+      /run/lock/test_steal_h1b.lock /run/lock/test_steal_h1b.pid
+
 # Summary
 echo
 echo "================================================"
