@@ -417,9 +417,9 @@ main() {
 
   echo $$ > "$PIDFILE" || die 5 "Failed to write PID file ${PIDFILE@Q}"
 
+  # Execute the shlocked command
   local -i exit_code=0
   "$@" || exit_code=$?
-
   exit $exit_code
 }
 
